@@ -1,0 +1,30 @@
+---
+description: Non-negotiable SelectBeaconSDK product and safety constraints
+alwaysApply: true
+---
+
+# SelectBeaconSDK constraints
+
+Read `docs/development-context.md` and `docs/decisions.md` before changing behavior.
+
+## Must
+
+- Core Location iBeacon ranging only; never add CoreBluetooth scanning
+- Single fleet UUID `76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911`
+- Identify beacons by UUID / major / minor only (no serial resolution in SDK)
+- Observe host location authorization; never request permission
+- `configure(appKey:)` before `start()`; configure does no ranging, disk, or network
+- iOS 17+, Swift 6, `@MainActor` facade; zero third-party dependencies
+- Standard public API: configure, start/stop, non-sensitive `operationalStatus` only
+- Beacon / queue data via `SelectBeaconAppSupport` + `@_spi(SelectApp)` — not standard consumers
+- 60s observation windows (`bestRSSI`, location, `latestTimestamp`, `observationCount`); close on window end or 30s absence; enqueue on close
+- Cached location only; no one-shot GPS per sighting
+- Durable actor-isolated queue before adapter notify; only `stop()` bumps `deliverySession`
+- Gate Start on `isStopFinalizePending`, not empty open windows
+
+## Must not
+
+- Invent live ingestion endpoints or ack JSON beyond the confirmed payload DTO
+- Log tokens, full payloads, or secrets
+- Force-unwrap runtime paths; degrade quietly when auth/location unavailable
+- Put IDFV / deviceId into AppSupport UI models

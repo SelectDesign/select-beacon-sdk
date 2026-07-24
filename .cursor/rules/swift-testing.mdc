@@ -1,0 +1,39 @@
+---
+description: Unit-test standards for SelectBeaconSDK and AppSupport test targets
+globs: Tests/**/*.swift
+alwaysApply: false
+---
+
+# Testing standards
+
+## Requirements
+
+- No real hardware, Core Location hardware, or network in unit tests
+- Fake/manual seams: engine, permission, lifecycle, queue, path, schedulers, clock, device id, auth, transport
+- Prefer behavior assertions (callbacks, queue contents, pending flags, encoded JSON keys)
+- Cover success, failure, cancel/session invalidation, and empty/edge batches
+- Keep tests `@MainActor` when exercising the facade or main-actor types
+
+## Patterns
+
+```swift
+// ✅ Deterministic time
+clock.now = clock.now.addingTimeInterval(timeout + 0.1)
+absenceScheduler.fire()
+
+// ❌ Sleeping for wall-clock window duration in unit tests
+try await Task.sleep(for: .seconds(60))
+```
+
+- Use `BlockingQueue` when asserting in-flight durable writes / stop-finalize pending
+- Encoding tests: assert JSON keys and `null` lat/lng; never require live IDFV
+- Do not assert on private call order unless it is the bug under test
+
+## Commands
+
+Prefer package tests:
+
+```bash
+xcodebuild test -scheme SelectBeaconSDK-Package \
+  -destination 'platform=iOS Simulator,name=iPhone 17'
+```
