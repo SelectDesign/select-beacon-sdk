@@ -116,6 +116,10 @@ The adapter is a Select integration boundary, not a security boundary.
 
 ## API environments
 
+Ingest and auth are implemented by the Select backend service
+[beacon-ingestor](https://github.com/SelectDesign/beacon-ingestor). This SDK
+posts to that service’s JSON:API endpoints on the configured environment host.
+
 Production is the default and requires no additional consumer configuration:
 
 ```swift
@@ -191,3 +195,4 @@ tagging, and rollback guidance, follow [the release runbook](docs/releasing.md).
 - [Engineering constraints](docs/development-context.md)
 - [Key decisions](docs/decisions.md)
 - [Release runbook](docs/releasing.md)
+- [Beacon ingestor (backend API)](https://github.com/SelectDesign/beacon-ingestor)
