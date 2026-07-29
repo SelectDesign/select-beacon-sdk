@@ -5,22 +5,24 @@ struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
     let uuid: UUID
     let major: Int
     let minor: Int
-    let rssi: Int
+    let bestRssiDbm: Int
     let observations: Int
     let lat: Double?
     let lng: Double?
-    let timestamp: Date
+    let firstSeen: Date
+    let lastSeen: Date
     let deviceId: String
 
     enum CodingKeys: String, CodingKey {
         case uuid
         case major
         case minor
-        case rssi
+        case bestRssiDbm = "best-rssi-dbm"
         case observations
         case lat
         case lng
-        case timestamp
+        case firstSeen = "first-seen"
+        case lastSeen = "last-seen"
         case deviceId = "device-id"
     }
 
@@ -28,11 +30,12 @@ struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
         uuid = detection.uuid
         major = detection.major
         minor = detection.minor
-        rssi = detection.bestRSSI
+        bestRssiDbm = detection.bestRSSI
         observations = detection.observationCount
         lat = detection.location?.latitude
         lng = detection.location?.longitude
-        timestamp = detection.latestTimestamp
+        firstSeen = detection.windowStartedAt
+        lastSeen = detection.latestTimestamp
         self.deviceId = deviceId
     }
 
@@ -41,7 +44,7 @@ struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
         try container.encode(uuid, forKey: .uuid)
         try container.encode(major, forKey: .major)
         try container.encode(minor, forKey: .minor)
-        try container.encode(rssi, forKey: .rssi)
+        try container.encode(bestRssiDbm, forKey: .bestRssiDbm)
         try container.encode(observations, forKey: .observations)
         if let lat {
             try container.encode(lat, forKey: .lat)
@@ -53,7 +56,8 @@ struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
         } else {
             try container.encodeNil(forKey: .lng)
         }
-        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(firstSeen, forKey: .firstSeen)
+        try container.encode(lastSeen, forKey: .lastSeen)
         try container.encode(deviceId, forKey: .deviceId)
     }
 }

@@ -281,9 +281,10 @@ remaining FIFO snapshot.
 
 `BeaconUploadPayload.swift` defines the confirmed ingestion body as a JSON:API
 v1 document: `{ "data": [ { "type": "sdk_beacon", "attributes": { … } } ] }`
-with kebab-case attribute keys `uuid`, `major`, `minor`, `rssi`,
-`observations`, `lat`, `lng`, `timestamp`, and `device-id`
-(`UIDevice.identifierForVendor`). Client resource `id` is omitted. Missing
+with kebab-case attribute keys `uuid`, `major`, `minor`, `best-rssi-dbm`,
+`observations`, `lat`, `lng`, `first-seen`, `last-seen`, and `device-id`
+(`UIDevice.identifierForVendor`). `first-seen` maps from `windowStartedAt` and
+`last-seen` from `latestTimestamp`. Client resource `id` is omitted. Missing
 location encodes `lat`/`lng` as JSON `null`. The durable queue `id` is not
 included in the body; on HTTP **200** the transport acknowledges the entire
 posted batch using those local IDs. Eddystone `instanceId` is out of scope
@@ -311,6 +312,7 @@ access tokens.
 base URL is a usable http(s) URL. Production remains deferred while
 `REPLACE_ME_PRODUCTION` is still the placeholder. Tests use fakes against the
 coordinator and HTTP seams.
+
 ## Diagnostics and Sentry
 
 `DiagnosticsReporter.swift` provides the internal `DiagnosticsReporting` seam.
@@ -359,37 +361,37 @@ physical iPhone/iPad validation checklist.
 
 ## File map
 
-| File | Responsibility |
-|---|---|
-| `Public/SelectBeaconSDK.swift` | Core lifecycle, status, SPI bridge, and queue wiring |
-| `Public/SDKOperationalStatus.swift` | Standard-consumer operational status models |
-| `Public/DetectedBeacon.swift` | Select-app SPI detection model |
-| `Public/BeaconReporting.swift` | Select-app SPI observation and report models |
-| `../SelectBeaconAppSupport/SelectBeaconAppSupport.swift` | Select app state-view adapter |
-| `Configuration/Configuration.swift` | Internal app key, endpoint, environment, and queue namespace |
-| `Detection/PermissionObserver.swift` | Observe-only Core Location authorization adapter |
-| `Detection/ApplicationLifecycleObserver.swift` | App activity observer for When In Use policy |
-| `Detection/RangingSessionState.swift` | Pure ranging policy state machine |
-| `Detection/CoreLocationDetectionEngine.swift` | Main-actor Core Location beacon ranging adapter |
-| `Detection/ObservationWindowStore.swift` | Pure 60s observation-window aggregation |
-| `Detection/ActiveBeaconStore.swift` | In-memory active beacon snapshot |
-| `Detection/LocationFix.swift` | SDK-owned cached location snapshot |
-| `Detection/LocationProviding.swift` | Location cache protocol |
-| `Detection/CoreLocationProvider.swift` | Hybrid coarse / significant-change location |
-| `Persistence/DurableDetectionQueue.swift` | Actor-isolated persisted detection queue |
-| `Networking/UploadInterfaces.swift` | Auth/transport upload contracts |
-| `Networking/BeaconUploadPayload.swift` | JSON:API `sdk_beacon` document + kebab-case encoder |
-| `Networking/DeviceIdentifying.swift` | IDFV (`device-id`) seam for upload stamping |
-| `Networking/HTTPIngestUploadTransport.swift` | Live ingest POST with Bearer auth |
-| `Networking/UploadCoordinator.swift` | Quiet debounce, max-age, and opportunistic batch upload |
-| `Networking/TokenBrokerAuthProvider.swift` | In-memory Select token-broker authorization |
-| `Support/Clock.swift` | Injectable time source |
-| `Support/PresenceExpiryScheduler.swift` | Main-actor active-presence expiry seam |
-| `Support/DiagnosticsReporter.swift` | Internal diagnostics bridge |
-| `Support/SDKDependencies.swift` | Internal live/test dependency composition |
-| `development-context.md` | Authoritative product constraints |
-| `decisions.md` | Short record of key decisions |
-| `README.md` | Host integration instructions |
+| File                                                     | Responsibility                                               |
+| -------------------------------------------------------- | ------------------------------------------------------------ |
+| `Public/SelectBeaconSDK.swift`                           | Core lifecycle, status, SPI bridge, and queue wiring         |
+| `Public/SDKOperationalStatus.swift`                      | Standard-consumer operational status models                  |
+| `Public/DetectedBeacon.swift`                            | Select-app SPI detection model                               |
+| `Public/BeaconReporting.swift`                           | Select-app SPI observation and report models                 |
+| `../SelectBeaconAppSupport/SelectBeaconAppSupport.swift` | Select app state-view adapter                                |
+| `Configuration/Configuration.swift`                      | Internal app key, endpoint, environment, and queue namespace |
+| `Detection/PermissionObserver.swift`                     | Observe-only Core Location authorization adapter             |
+| `Detection/ApplicationLifecycleObserver.swift`           | App activity observer for When In Use policy                 |
+| `Detection/RangingSessionState.swift`                    | Pure ranging policy state machine                            |
+| `Detection/CoreLocationDetectionEngine.swift`            | Main-actor Core Location beacon ranging adapter              |
+| `Detection/ObservationWindowStore.swift`                 | Pure 60s observation-window aggregation                      |
+| `Detection/ActiveBeaconStore.swift`                      | In-memory active beacon snapshot                             |
+| `Detection/LocationFix.swift`                            | SDK-owned cached location snapshot                           |
+| `Detection/LocationProviding.swift`                      | Location cache protocol                                      |
+| `Detection/CoreLocationProvider.swift`                   | Hybrid coarse / significant-change location                  |
+| `Persistence/DurableDetectionQueue.swift`                | Actor-isolated persisted detection queue                     |
+| `Networking/UploadInterfaces.swift`                      | Auth/transport upload contracts                              |
+| `Networking/BeaconUploadPayload.swift`                   | JSON:API `sdk_beacon` document + kebab-case encoder          |
+| `Networking/DeviceIdentifying.swift`                     | IDFV (`device-id`) seam for upload stamping                  |
+| `Networking/HTTPIngestUploadTransport.swift`             | Live ingest POST with Bearer auth                            |
+| `Networking/UploadCoordinator.swift`                     | Quiet debounce, max-age, and opportunistic batch upload      |
+| `Networking/TokenBrokerAuthProvider.swift`               | In-memory Select token-broker authorization                  |
+| `Support/Clock.swift`                                    | Injectable time source                                       |
+| `Support/PresenceExpiryScheduler.swift`                  | Main-actor active-presence expiry seam                       |
+| `Support/DiagnosticsReporter.swift`                      | Internal diagnostics bridge                                  |
+| `Support/SDKDependencies.swift`                          | Internal live/test dependency composition                    |
+| `development-context.md`                                 | Authoritative product constraints                            |
+| `decisions.md`                                           | Short record of key decisions                                |
+| `README.md`                                              | Host integration instructions                                |
 
 ## Maintenance rules
 

@@ -34,18 +34,19 @@ final class BeaconUploadPayloadTests: XCTestCase {
         XCTAssertNil(resource["id"])
         let attributes = try XCTUnwrap(resource["attributes"] as? [String: Any])
         XCTAssertEqual(Set(attributes.keys), [
-            "uuid", "major", "minor", "rssi", "observations",
-            "lat", "lng", "timestamp", "device-id",
+            "uuid", "major", "minor", "best-rssi-dbm", "observations",
+            "lat", "lng", "first-seen", "last-seen", "device-id",
         ])
         XCTAssertEqual(attributes["uuid"] as? String, fleetUUID.uuidString)
         XCTAssertEqual(attributes["major"] as? Int, 1)
         XCTAssertEqual(attributes["minor"] as? Int, 42)
-        XCTAssertEqual(attributes["rssi"] as? Int, -55)
+        XCTAssertEqual(attributes["best-rssi-dbm"] as? Int, -55)
         XCTAssertEqual(attributes["observations"] as? Int, 4)
         XCTAssertEqual(attributes["lat"] as? Double, 40.7128)
         XCTAssertEqual(attributes["lng"] as? Double, -74.006)
         XCTAssertEqual(attributes["device-id"] as? String, deviceId)
-        XCTAssertNotNil(attributes["timestamp"] as? String)
+        XCTAssertEqual(attributes["first-seen"] as? String, "2023-11-14T22:12:50Z")
+        XCTAssertEqual(attributes["last-seen"] as? String, "2023-11-14T22:13:20Z")
     }
 
     func testEncodeRecordWithoutLocationUsesNullLatLng() throws {
@@ -112,7 +113,9 @@ final class BeaconUploadPayloadTests: XCTestCase {
         XCTAssertEqual(document.data.count, 1)
         XCTAssertEqual(document.data[0].type, "sdk_beacon")
         XCTAssertEqual(document.data[0].attributes.uuid, fleetUUID)
-        XCTAssertEqual(document.data[0].attributes.rssi, -62)
+        XCTAssertEqual(document.data[0].attributes.bestRssiDbm, -62)
+        XCTAssertEqual(document.data[0].attributes.firstSeen, timestamp)
+        XCTAssertEqual(document.data[0].attributes.lastSeen, timestamp)
         XCTAssertEqual(document.data[0].attributes.observations, 2)
         XCTAssertEqual(document.data[0].attributes.deviceId, deviceId)
         XCTAssertNil(document.data[0].attributes.lat)
