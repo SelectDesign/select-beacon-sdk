@@ -88,18 +88,7 @@ final class CoreLocationProvider: NSObject, LocationProviding {
     }
 
     private var mappedAuthorization: LocationAuthorization {
-        switch locationManager.authorizationStatus {
-        case .authorizedAlways:
-            return .always
-        case .authorizedWhenInUse:
-            return .whenInUse
-        case .notDetermined:
-            return .notDetermined
-        case .denied, .restricted:
-            return .unavailable
-        @unknown default:
-            return .unavailable
-        }
+        LocationAuthorization(status: locationManager.authorizationStatus)
     }
 
     private func startCoarseUpdates() {

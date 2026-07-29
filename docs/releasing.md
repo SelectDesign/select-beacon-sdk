@@ -24,13 +24,13 @@ Do not create a production release until all applicable gates are complete:
 - Replace `REPLACE_ME_PRODUCTION` with the confirmed production API endpoint.
 - Validate the Select token-broker endpoint and app-key provisioning process.
 - Confirm the backend's upload payload and acknowledgement contract.
-- Implement and test the production upload coordinator.
+- Validate the existing upload coordinator, token broker, and HTTP transport
+  end-to-end against the production host.
 
 At present, the SDK detects beacons, aggregates observation windows, persists
-eligible reports locally, and includes a debounced upload coordinator behind
-deferred transport/auth seams until VIP confirms the wire format. A release
-before production transport is wired must be described as detection and
-durable-queue support with coordinator seams in place.
+eligible reports locally, and uploads through live auth/HTTP implementations
+when a usable environment URL is configured. Staging supports this path today.
+Production remains disabled only while `REPLACE_ME_PRODUCTION` is present.
 
 ## 3. Prepare a supported build machine
 
@@ -157,6 +157,6 @@ the prior known-good tag.
 - [ ] Physical iPhone and iPad smoke tests pass.
 - [ ] Permissions and background behavior are verified.
 - [ ] Production endpoint and upload readiness are confirmed, or release notes
-      clearly state that uploads are not implemented.
+      clearly state that only explicit staging URLs can upload.
 - [ ] Standard and Select-app product integration paths are documented.
 - [ ] Version tag and release notes are prepared.

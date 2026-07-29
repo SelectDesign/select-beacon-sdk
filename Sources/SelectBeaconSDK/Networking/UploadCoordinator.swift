@@ -1,76 +1,4 @@
 import Foundation
-import Network
-
-/// Observes whether the device currently has a usable network path.
-@MainActor
-protocol NetworkPathObserving: AnyObject {
-    var isSatisfied: Bool { get }
-    var onPathChanged: ((Bool) -> Void)? { get set }
-    func start()
-    func stop()
-}
-
-@MainActor
-final class NetworkPathObserver: NetworkPathObserving {
-    var onPathChanged: ((Bool) -> Void)?
-    private(set) var isSatisfied = true
-
-    private let monitor = NWPathMonitor()
-    private let queue = DispatchQueue(label: "SelectBeaconSDK.NetworkPathObserver")
-    private var hasStarted = false
-
-    func start() {
-        guard !hasStarted else { return }
-        hasStarted = true
-        monitor.pathUpdateHandler = { [weak self] path in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let satisfied = path.status == .satisfied
-                guard self.isSatisfied != satisfied else { return }
-                self.isSatisfied = satisfied
-                self.onPathChanged?(satisfied)
-            }
-        }
-        monitor.start(queue: queue)
-    }
-
-    func stop() {
-        guard hasStarted else { return }
-        hasStarted = false
-        monitor.cancel()
-    }
-}
-
-/// Schedules a single delayed action; rescheduling cancels the previous one.
-@MainActor
-protocol SendDebounceScheduling: AnyObject {
-    func schedule(after delay: TimeInterval, action: @escaping @MainActor () -> Void)
-    func cancel()
-}
-
-@MainActor
-final class TaskSendDebounceScheduler: SendDebounceScheduling {
-    private var task: Task<Void, Never>?
-
-    func schedule(after delay: TimeInterval, action: @escaping @MainActor () -> Void) {
-        cancel()
-        task = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(Swift.max(0, delay)))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-            self?.task = nil
-            action()
-        }
-    }
-
-    func cancel() {
-        task?.cancel()
-        task = nil
-    }
-}
 
 /// Transmits durable queued reports using quiet debounce, max-age, and opportunistic triggers.
 ///
@@ -83,9 +11,9 @@ final class UploadCoordinator {
     private var authProvider: AuthProvider
     private var transport: UploadTransport
     private let pathObserver: NetworkPathObserving
-    private let quietDebounceScheduler: SendDebounceScheduling
-    private let maxAgeScheduler: SendDebounceScheduling
-    private let retryBackoffScheduler: SendDebounceScheduling
+    private let quietDebounceScheduler: DelayedActionScheduling
+    private let maxAgeScheduler: DelayedActionScheduling
+    private let retryBackoffScheduler: DelayedActionScheduling
     private let clock: Clock
     private let diagnosticsReporter: DiagnosticsReporting
     private let deviceIdentifier: DeviceIdentifying
@@ -106,9 +34,9 @@ final class UploadCoordinator {
         authProvider: AuthProvider,
         transport: UploadTransport,
         pathObserver: NetworkPathObserving,
-        quietDebounceScheduler: SendDebounceScheduling = TaskSendDebounceScheduler(),
-        maxAgeScheduler: SendDebounceScheduling = TaskSendDebounceScheduler(),
-        retryBackoffScheduler: SendDebounceScheduling = TaskSendDebounceScheduler(),
+        quietDebounceScheduler: DelayedActionScheduling = TaskDelayedActionScheduler(),
+        maxAgeScheduler: DelayedActionScheduling = TaskDelayedActionScheduler(),
+        retryBackoffScheduler: DelayedActionScheduling = TaskDelayedActionScheduler(),
         clock: Clock,
         diagnosticsReporter: DiagnosticsReporting = NoopDiagnosticsReporter(),
         deviceIdentifier: DeviceIdentifying = VendorDeviceIdentifier(),
@@ -140,10 +68,13 @@ final class UploadCoordinator {
         wantsRunning = true
         pathObserver.onPathChanged = { [weak self] isSatisfied in
             guard let self, self.wantsRunning, isSatisfied else { return }
-            // Connectivity return is an immediate opportunistic trigger.
             self.flushOpportunistically()
         }
         pathObserver.start()
+        // Resume max-age (and overdue zero-delay flush) for records already on disk.
+        Task { @MainActor [weak self] in
+            await self?.refreshMaxAgeSchedule()
+        }
     }
 
     func stop() {
@@ -219,7 +150,6 @@ final class UploadCoordinator {
 
     private func flushIfPossible() async {
         guard wantsRunning, !isFlushing else { return }
-        // Offline triggers do nothing now; connectivity-return will retry.
         guard pathObserver.isSatisfied else { return }
         guard let queue = queueProvider() else { return }
 
@@ -245,10 +175,10 @@ final class UploadCoordinator {
                     return
                 }
 
-                // One short-lived token per batch, not per report.
                 let token = try await authProvider.validToken()
                 let response = try await transport.upload(detections: batch, bearerToken: token)
-                if case .accepted(let ids) = response {
+                switch response {
+                case .accepted(let ids):
                     // `nextBatch` is a non-destructive peek. Empty or unknown IDs
                     // would leave the queue unchanged and spin this loop forever.
                     let batchIDs = Set(batch.map(\.id))
@@ -260,8 +190,6 @@ final class UploadCoordinator {
                     currentBackoff = configuration.uploadRetryBackoff
                     await onQueueAcknowledged?()
                     await refreshMaxAgeSchedule()
-                } else {
-                    return
                 }
             }
         } catch {

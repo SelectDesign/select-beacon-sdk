@@ -219,14 +219,12 @@ Queue file I/O does not run on the main actor; persistence failures are
 recorded through `DiagnosticsReporting` and exposed as non-sensitive
 operational status.
 
-Stopping the SDK invalidates deliveries for its current session. Already-started
-persistence can finish so the observation is not lost, but the Select adapter
-will not receive a stale queue-change event from the stopped session.
-Stop-finalize pending clears when that stop generation settles (success,
-failure, or cancellation after `Task.cancel`), independent of ordinary
-ranging/absence enqueues. A later empty `stop()` does not clear pending early
-while a cancelled finalize write may still be in flight; the cancelled task's
-completion hook clears the flag when that generation finishes.
+Stopping the SDK invalidates adapter notifications for its current session.
+Every already-finalized report still completes serial durable persistence so a
+later stop cannot discard the remainder of a multi-report batch.
+Stop-finalize pending clears when the full stop generation settles (success or
+failure), independent of ordinary ranging/absence enqueues. A later empty
+`stop()` does not clear pending while that durable batch is still in flight.
 
 Unreadable queue data is never replaced by a newly observed detection. Ordinary
 enqueue / load paths return `DurableDetectionQueueError.unreadableStoredDetections`
@@ -333,25 +331,33 @@ history in diagnostics. Rate-limit repeated failures such as offline retries.
 
 The tests are split by responsibility:
 
-- `Tests/SelectBeaconSDKTests/Detection/SelectBeaconSDKLifecycleTests.swift`
-  covers SDK behavior with fake engine, permission, lifecycle, queue, clock,
-  and diagnostics dependencies.
-- `Tests/SelectBeaconSDKTests/Detection/` also contains pure ranging-state,
-  observation-window, location-provider, and Core Location constraint tests.
+- `Tests/SelectBeaconSDKTests/Detection/SelectBeaconSDKConfigurationTests.swift`
+  covers configuration, authorization, and ranging lifecycle.
+- `Tests/SelectBeaconSDKTests/Detection/SelectBeaconSDKObservationTests.swift`
+  covers active presence, observation aggregation, persistence, and diagnostics.
+- `Tests/SelectBeaconSDKTests/Detection/SelectBeaconSDKStopFinalizeTests.swift`
+  covers durable stop-finalize ordering, repeated-stop races, and queue clearing.
+- Other tests under `Tests/SelectBeaconSDKTests/Detection/` cover the pure
+  ranging state, observation-window store, location provider, and Core Location
+  engine adapter.
 - `Tests/SelectBeaconSDKTests/Persistence/FileDetectionQueueTests.swift`
   covers relaunch, acknowledgement, persistence errors, malformed queue data,
   legacy JSON migration, and environment isolation.
+- `Tests/SelectBeaconSDKTests/Networking/BeaconUploadPayloadTests.swift`,
+  `HTTPIngestUploadTransportTests.swift`, and `APIEndpointURLTests.swift` cover
+  the JSON:API body and concrete endpoint/transport behavior.
 - `Tests/SelectBeaconSDKTests/Networking/TokenBrokerAuthProviderTests.swift`
   covers cached token retrieval and refresh behavior without real networking.
 - `Tests/SelectBeaconSDKTests/Networking/UploadCoordinatorTests.swift`
   covers debounce reset, batch auth, offline backoff, and opportunistic flush.
-- `Tests/SelectBeaconSDKTests/Support/` holds shared in-memory file storage.
+- `Tests/SelectBeaconAppSupportTests/` verifies the Select-only adapter boundary.
+- `Tests/SelectBeaconSDKTests/Support/` holds shared fakes and fixtures.
 
 Run:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-xcodebuild test -scheme SelectBeaconSDK \
+xcodebuild test -scheme SelectBeaconSDK-Package \
 -destination 'platform=iOS Simulator,id=<simulator-udid>'
 ```
 
@@ -365,13 +371,14 @@ physical iPhone/iPad validation checklist.
 | -------------------------------------------------------- | ------------------------------------------------------------ |
 | `Public/SelectBeaconSDK.swift`                           | Core lifecycle, status, SPI bridge, and queue wiring         |
 | `Public/SDKOperationalStatus.swift`                      | Standard-consumer operational status models                  |
-| `Public/DetectedBeacon.swift`                            | Select-app SPI detection model                               |
-| `Public/BeaconReporting.swift`                           | Select-app SPI observation and report models                 |
+| `Public/BeaconReporting.swift`                           | Select-app SPI snapshot models                               |
 | `../SelectBeaconAppSupport/SelectBeaconAppSupport.swift` | Select app state-view adapter                                |
 | `Configuration/Configuration.swift`                      | Internal app key, endpoint, environment, and queue namespace |
 | `Detection/PermissionObserver.swift`                     | Observe-only Core Location authorization adapter             |
 | `Detection/ApplicationLifecycleObserver.swift`           | App activity observer for When In Use policy                 |
 | `Detection/RangingSessionState.swift`                    | Pure ranging policy state machine                            |
+| `Detection/DetectionEngine.swift`                        | Internal ranging engine seam                                 |
+| `Detection/DetectedBeacon.swift`                         | Internal platform-neutral ranging DTO                        |
 | `Detection/CoreLocationDetectionEngine.swift`            | Main-actor Core Location beacon ranging adapter              |
 | `Detection/ObservationWindowStore.swift`                 | Pure 60s observation-window aggregation                      |
 | `Detection/ActiveBeaconStore.swift`                      | In-memory active beacon snapshot                             |
@@ -383,10 +390,11 @@ physical iPhone/iPad validation checklist.
 | `Networking/BeaconUploadPayload.swift`                   | JSON:API `sdk_beacon` document + kebab-case encoder          |
 | `Networking/DeviceIdentifying.swift`                     | IDFV (`device-id`) seam for upload stamping                  |
 | `Networking/HTTPIngestUploadTransport.swift`             | Live ingest POST with Bearer auth                            |
+| `Networking/NetworkPathObserver.swift`                   | Restart-safe connectivity observer                           |
 | `Networking/UploadCoordinator.swift`                     | Quiet debounce, max-age, and opportunistic batch upload      |
 | `Networking/TokenBrokerAuthProvider.swift`               | In-memory Select token-broker authorization                  |
 | `Support/Clock.swift`                                    | Injectable time source                                       |
-| `Support/PresenceExpiryScheduler.swift`                  | Main-actor active-presence expiry seam                       |
+| `Support/DelayedActionScheduler.swift`                   | Shared replaceable one-shot timer seam                       |
 | `Support/DiagnosticsReporter.swift`                      | Internal diagnostics bridge                                  |
 | `Support/SDKDependencies.swift`                          | Internal live/test dependency composition                    |
 | `development-context.md`                                 | Authoritative product constraints                            |

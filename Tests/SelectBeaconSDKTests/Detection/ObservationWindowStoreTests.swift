@@ -12,20 +12,20 @@ final class ObservationWindowStoreTests: XCTestCase {
         )
     }
 
-    private func sighting(rssi: Int) -> BeaconSighting {
-        BeaconSighting(uuid: fleetUUID, major: 1, minor: 42, rssi: rssi)
+    private func beacon(minor: Int = 42, rssi: Int) -> DetectedBeacon {
+        DetectedBeacon(uuid: fleetUUID, major: 1, minor: minor, rssi: rssi)
     }
 
     func testFirstSightingOpensWindow() {
         var store = makeStore()
-        let effect = store.process(sighting: sighting(rssi: -70), location: nil, now: t0)
+        let effect = store.process(beacon: beacon(rssi: -70), location: nil, now: t0)
         XCTAssertEqual(effect, .updated)
-        XCTAssertTrue(store.hasOpenWindows)
+        XCTAssertEqual(store.snapshot.count, 1)
     }
 
     func testInWindowUpdatesAggregateWithoutClosing() {
         var store = makeStore()
-        _ = store.process(sighting: sighting(rssi: -70), location: nil, now: t0)
+        _ = store.process(beacon: beacon(rssi: -70), location: nil, now: t0)
         let later = LocationFix(
             latitude: 40.1,
             longitude: -75.1,
@@ -33,7 +33,7 @@ final class ObservationWindowStoreTests: XCTestCase {
             timestamp: t0.addingTimeInterval(10)
         )
         let effect = store.process(
-            sighting: sighting(rssi: -60),
+            beacon: beacon(rssi: -60),
             location: later,
             now: t0.addingTimeInterval(10)
         )
@@ -49,8 +49,8 @@ final class ObservationWindowStoreTests: XCTestCase {
 
     func testBestRSSIKeepsMaximumWhenLaterSightingIsWeaker() {
         var store = makeStore()
-        _ = store.process(sighting: sighting(rssi: -55), location: nil, now: t0)
-        _ = store.process(sighting: sighting(rssi: -70), location: nil, now: t0.addingTimeInterval(5))
+        _ = store.process(beacon: beacon(rssi: -55), location: nil, now: t0)
+        _ = store.process(beacon: beacon(rssi: -70), location: nil, now: t0.addingTimeInterval(5))
         let closed = store.finalizeAllOpenWindows()
         XCTAssertEqual(closed[0].bestRSSI, -55)
         XCTAssertEqual(closed[0].observationCount, 2)
@@ -70,9 +70,9 @@ final class ObservationWindowStoreTests: XCTestCase {
             horizontalAccuracy: 90,
             timestamp: t0.addingTimeInterval(20)
         )
-        _ = store.process(sighting: sighting(rssi: -50), location: earlyLocation, now: t0)
+        _ = store.process(beacon: beacon(rssi: -50), location: earlyLocation, now: t0)
         _ = store.process(
-            sighting: sighting(rssi: -70),
+            beacon: beacon(rssi: -70),
             location: laterLocation,
             now: t0.addingTimeInterval(20)
         )
@@ -83,9 +83,9 @@ final class ObservationWindowStoreTests: XCTestCase {
 
     func testSightingAfterWindowDurationClosesAndOpensReplacement() {
         var store = makeStore()
-        _ = store.process(sighting: sighting(rssi: -70), location: nil, now: t0)
+        _ = store.process(beacon: beacon(rssi: -70), location: nil, now: t0)
         let effect = store.process(
-            sighting: sighting(rssi: -65),
+            beacon: beacon(rssi: -65),
             location: nil,
             now: t0.addingTimeInterval(60.1)
         )
@@ -104,24 +104,24 @@ final class ObservationWindowStoreTests: XCTestCase {
 
     func testAbsenceClosesWindowWithoutFurtherSightings() {
         var store = makeStore()
-        _ = store.process(sighting: sighting(rssi: -70), location: nil, now: t0)
+        _ = store.process(beacon: beacon(rssi: -70), location: nil, now: t0)
         let closed = store.expireAbsences(now: t0.addingTimeInterval(30.1))
         XCTAssertEqual(closed.count, 1)
-        XCTAssertFalse(store.hasOpenWindows)
+        XCTAssertTrue(store.snapshot.isEmpty)
     }
 
     func testNilLocationIsPreserved() {
         var store = makeStore()
-        _ = store.process(sighting: sighting(rssi: -70), location: nil, now: t0)
+        _ = store.process(beacon: beacon(rssi: -70), location: nil, now: t0)
         let closed = store.finalizeAllOpenWindows()
         XCTAssertNil(closed[0].location)
     }
 
     func testSnapshotReflectsOpenWindowAggregates() {
         var store = makeStore()
-        _ = store.process(sighting: sighting(rssi: -70), location: nil, now: t0)
+        _ = store.process(beacon: beacon(rssi: -70), location: nil, now: t0)
         _ = store.process(
-            sighting: sighting(rssi: -50),
+            beacon: beacon(rssi: -50),
             location: LocationFix(
                 latitude: 1,
                 longitude: 2,
@@ -137,5 +137,14 @@ final class ObservationWindowStoreTests: XCTestCase {
         XCTAssertEqual(snapshot[0].location?.latitude, 1)
         _ = store.finalizeAllOpenWindows()
         XCTAssertTrue(store.snapshot.isEmpty)
+    }
+
+    func testMultipleIdentitiesOpenConcurrentWindows() {
+        var store = makeStore()
+        _ = store.process(beacon: beacon(minor: 1, rssi: -55), location: nil, now: t0)
+        _ = store.process(beacon: beacon(minor: 2, rssi: -60), location: nil, now: t0)
+        XCTAssertEqual(store.snapshot.map(\.minor), [1, 2])
+        let closed = store.finalizeAllOpenWindows()
+        XCTAssertEqual(closed.map(\.minor), [1, 2])
     }
 }

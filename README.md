@@ -127,7 +127,7 @@ SelectBeaconSDK.configure(appKey: key)
 ```
 
 The production endpoint is internally stubbed as `REPLACE_ME_PRODUCTION` until the
-backend contract is supplied. For staging, pass an explicit endpoint so separate
+production host is confirmed. For staging, pass an explicit endpoint so separate
 staging deployments can coexist:
 
 ```swift
@@ -137,9 +137,10 @@ SelectBeaconSDK.configure(
 )
 ```
 
-Replace the production placeholder with the confirmed endpoint before a
-production upload transport is added. Configuration cannot change after `start()`;
-stop and use a fresh process/session before switching environments.
+Staging already uses the live token-broker and HTTP ingest implementations.
+Replace the production placeholder before enabling production upload.
+Configuration cannot change after `start()`; stop and use a fresh process/session
+before switching environments.
 
 When a usable environment base URL is configured, each ingest body is a
 JSON:API document posted to `{base}/ingest/sdk/v1`:

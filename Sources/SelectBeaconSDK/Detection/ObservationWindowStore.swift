@@ -1,22 +1,20 @@
 import Foundation
 
-/// A radio observation used by the observation-window aggregator.
-struct BeaconSighting {
-    let uuid: UUID
-    let major: Int
-    let minor: Int
-    let rssi: Int
-
-    var identity: BeaconIdentity {
-        BeaconIdentity(uuid: uuid, major: major, minor: minor)
-    }
-}
-
 /// The stable identity of a physical iBeacon in Select's fleet.
 struct BeaconIdentity: Hashable {
     let uuid: UUID
     let major: Int
     let minor: Int
+
+    init(uuid: UUID, major: Int, minor: Int) {
+        self.uuid = uuid
+        self.major = major
+        self.minor = minor
+    }
+
+    init(_ beacon: DetectedBeacon) {
+        self.init(uuid: beacon.uuid, major: beacon.major, minor: beacon.minor)
+    }
 }
 
 /// Finalized observation-window aggregates ready for durable enqueue.
@@ -78,10 +76,6 @@ struct ObservationWindowStore {
         self.absenceTimeout = absenceTimeout
     }
 
-    var hasOpenWindows: Bool {
-        !windows.isEmpty
-    }
-
     /// Stable-ordered snapshot of every open window's running aggregates.
     var snapshot: [OpenWindowSummary] {
         windows.values
@@ -117,17 +111,17 @@ struct ObservationWindowStore {
     }
 
     mutating func process(
-        sighting: BeaconSighting,
+        beacon: DetectedBeacon,
         location: LocationFix?,
         now: Date
     ) -> ObservationWindowEffect {
-        let identity = sighting.identity
+        let identity = BeaconIdentity(beacon)
 
         guard var existing = windows[identity] else {
             windows[identity] = OpenWindow(
                 identity: identity,
                 windowStartedAt: now,
-                bestRSSI: sighting.rssi,
+                bestRSSI: beacon.rssi,
                 latestTimestamp: now,
                 observationCount: 1,
                 location: location
@@ -141,7 +135,7 @@ struct ObservationWindowStore {
             windows[identity] = OpenWindow(
                 identity: identity,
                 windowStartedAt: now,
-                bestRSSI: sighting.rssi,
+                bestRSSI: beacon.rssi,
                 latestTimestamp: now,
                 observationCount: 1,
                 location: location
@@ -149,7 +143,7 @@ struct ObservationWindowStore {
             return .closed(closed, openedReplacement: true)
         }
 
-        existing.bestRSSI = max(existing.bestRSSI, sighting.rssi)
+        existing.bestRSSI = max(existing.bestRSSI, beacon.rssi)
         existing.latestTimestamp = now
         existing.observationCount += 1
         if let location {

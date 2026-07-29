@@ -10,9 +10,9 @@ struct SDKDependencies {
     let authProviderFactory: () -> AuthProvider
     let uploadTransportFactory: () -> UploadTransport
     let networkPathObserverFactory: () -> NetworkPathObserving
-    let quietDebounceSchedulerFactory: () -> SendDebounceScheduling
-    let maxAgeSchedulerFactory: () -> SendDebounceScheduling
-    let retryBackoffSchedulerFactory: () -> SendDebounceScheduling
+    let quietDebounceSchedulerFactory: () -> DelayedActionScheduling
+    let maxAgeSchedulerFactory: () -> DelayedActionScheduling
+    let retryBackoffSchedulerFactory: () -> DelayedActionScheduling
     let deviceIdentifierFactory: () -> DeviceIdentifying
     let clock: Clock
     let diagnosticsReporter: DiagnosticsReporting
@@ -26,9 +26,9 @@ struct SDKDependencies {
         authProviderFactory: { DeferredAuthProvider() },
         uploadTransportFactory: { DeferredUploadTransport() },
         networkPathObserverFactory: { NetworkPathObserver() },
-        quietDebounceSchedulerFactory: { TaskSendDebounceScheduler() },
-        maxAgeSchedulerFactory: { TaskSendDebounceScheduler() },
-        retryBackoffSchedulerFactory: { TaskSendDebounceScheduler() },
+        quietDebounceSchedulerFactory: { TaskDelayedActionScheduler() },
+        maxAgeSchedulerFactory: { TaskDelayedActionScheduler() },
+        retryBackoffSchedulerFactory: { TaskDelayedActionScheduler() },
         deviceIdentifierFactory: { VendorDeviceIdentifier() },
         clock: SystemClock(),
         diagnosticsReporter: NoopDiagnosticsReporter()

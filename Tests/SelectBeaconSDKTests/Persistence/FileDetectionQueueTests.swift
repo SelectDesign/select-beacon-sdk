@@ -49,14 +49,8 @@ final class FileDetectionQueueTests: XCTestCase {
     func testQueueSurvivesReloadAndAcknowledgesInOrder() async throws {
         let fileStore = MemoryFileStore()
         let fileURL = URL(fileURLWithPath: "/queue/pending.json")
-        let beacon = DetectedBeacon(
-            uuid: SDKConfiguration.default.monitoredUUIDs[0],
-            major: 1,
-            minor: 42,
-            rssi: -55
-        )
-        let first = QueuedDetection(detection: beacon, detectedAt: .distantPast)
-        let second = QueuedDetection(detection: beacon, detectedAt: .now)
+        let first = QueuedDetectionFixtures.make(latestTimestamp: .distantPast)
+        let second = QueuedDetectionFixtures.make(latestTimestamp: .now)
 
         let firstQueue = FileDetectionQueue(
             storageIdentifier: "test",
@@ -85,15 +79,7 @@ final class FileDetectionQueueTests: XCTestCase {
             fileStore: FailingFileStore(),
             fileURL: URL(fileURLWithPath: "/queue/pending.json")
         )
-        let detection = QueuedDetection(
-            detection: DetectedBeacon(
-                uuid: SDKConfiguration.default.monitoredUUIDs[0],
-                major: 1,
-                minor: 42,
-                rssi: -55
-            ),
-            detectedAt: .now
-        )
+        let detection = QueuedDetectionFixtures.make()
 
         do {
             try await queue.enqueue(detection)
@@ -113,15 +99,7 @@ final class FileDetectionQueueTests: XCTestCase {
             fileStore: FailsAfterFirstWriteFileStore(),
             fileURL: fileURL
         )
-        let detection = QueuedDetection(
-            detection: DetectedBeacon(
-                uuid: SDKConfiguration.default.monitoredUUIDs[0],
-                major: 1,
-                minor: 42,
-                rssi: -55
-            ),
-            detectedAt: .now
-        )
+        let detection = QueuedDetectionFixtures.make()
         try await queue.enqueue(detection)
 
         do {
@@ -145,15 +123,7 @@ final class FileDetectionQueueTests: XCTestCase {
             fileStore: fileStore,
             fileURL: fileURL
         )
-        let detection = QueuedDetection(
-            detection: DetectedBeacon(
-                uuid: SDKConfiguration.default.monitoredUUIDs[0],
-                major: 1,
-                minor: 42,
-                rssi: -55
-            ),
-            detectedAt: .now
-        )
+        let detection = QueuedDetectionFixtures.make()
 
         do {
             _ = try await queue.nextBatch(limit: 10)
@@ -219,14 +189,9 @@ final class FileDetectionQueueTests: XCTestCase {
             horizontalAccuracy: 80,
             timestamp: Date(timeIntervalSince1970: 1_700_000_100)
         )
-        let detection = QueuedDetection(
-            detection: DetectedBeacon(
-                uuid: SDKConfiguration.default.monitoredUUIDs[0],
-                major: 1,
-                minor: 42,
-                rssi: -48
-            ),
-            detectedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        let detection = QueuedDetectionFixtures.make(
+            bestRSSI: -48,
+            latestTimestamp: Date(timeIntervalSince1970: 1_700_000_000),
             location: location
         )
 
@@ -265,12 +230,6 @@ final class FileDetectionQueueTests: XCTestCase {
         XCTAssertNotEqual(production.queueStorageIdentifier, staging.queueStorageIdentifier)
 
         let fileStore = MemoryFileStore()
-        let beacon = DetectedBeacon(
-            uuid: SDKConfiguration.default.monitoredUUIDs[0],
-            major: 1,
-            minor: 42,
-            rssi: -55
-        )
         let productionQueue = FileDetectionQueue(
             storageIdentifier: production.queueStorageIdentifier,
             fileStore: fileStore,
@@ -282,7 +241,7 @@ final class FileDetectionQueueTests: XCTestCase {
             fileURL: URL(fileURLWithPath: "/queue/\(staging.queueStorageIdentifier).json")
         )
 
-        try await productionQueue.enqueue(QueuedDetection(detection: beacon, detectedAt: .now))
+        try await productionQueue.enqueue(QueuedDetectionFixtures.make())
 
         let productionBatch = try await productionQueue.nextBatch(limit: 10)
         let stagingBatch = try await stagingQueue.nextBatch(limit: 10)
@@ -293,18 +252,12 @@ final class FileDetectionQueueTests: XCTestCase {
     func testClearEmptiesQueueAndPersistsAcrossReload() async throws {
         let fileStore = MemoryFileStore()
         let fileURL = URL(fileURLWithPath: "/queue/pending.json")
-        let beacon = DetectedBeacon(
-            uuid: SDKConfiguration.default.monitoredUUIDs[0],
-            major: 1,
-            minor: 42,
-            rssi: -55
-        )
         let queue = FileDetectionQueue(
             storageIdentifier: "test",
             fileStore: fileStore,
             fileURL: fileURL
         )
-        try await queue.enqueue(QueuedDetection(detection: beacon, detectedAt: .now))
+        try await queue.enqueue(QueuedDetectionFixtures.make())
         try await queue.clear()
 
         let emptied = try await queue.nextBatch(limit: 10)

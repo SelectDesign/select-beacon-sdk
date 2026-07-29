@@ -1,9 +1,7 @@
 import Foundation
 
-/// `@MainActor` is Swift's main-thread/serial-executor guarantee. It means all
-/// mutable facade state below is read and changed in one ordered context, much
-/// like routing UI state through a single process. Disk I/O remains async in
-/// the queue actor, so it does not block this actor while it is waiting.
+/// Main host-facing facade. All mutable facade state is main-actor isolated;
+/// durable queue I/O runs on an actor so it does not block this executor.
 @MainActor
 public final class SelectBeaconSDK {
 
@@ -16,9 +14,10 @@ public final class SelectBeaconSDK {
     /// Receives non-sensitive changes to the SDK's operating state.
     public var onOperationalStatusChanged: ((SDKOperationalStatus) -> Void)?
 
-    /// This is intentionally hidden from ordinary SDK consumers. `@_spi` is a
-    /// compile-time API partition used only by `SelectBeaconAppSupport`; it is
-    /// not a security mechanism and applications must not import it directly.
+    // MARK: - Select AppSupport SPI bridge
+
+    /// Compile-time partition used only by `SelectBeaconAppSupport`. Applications
+    /// must not import `@_spi(SelectApp)` directly.
     @_spi(SelectApp)
     public var onSelectActiveBeaconsChanged: (([BeaconObservation]) -> Void)?
 
@@ -39,32 +38,15 @@ public final class SelectBeaconSDK {
     @_spi(SelectApp)
     public var onSelectStopFinalizePendingChanged: ((Bool) -> Void)?
 
-    @_spi(SelectApp)
-    public var onBeaconObserved: ((BeaconObservation) -> Void)?
+    // MARK: - Dependencies and session state
 
-    @_spi(SelectApp)
-    public var onBeaconActivityUpdated: ((BeaconActivityUpdate) -> Void)?
-
-    @_spi(SelectApp)
-    public var onBeaconReportStatusUpdated: ((BeaconReportStatusUpdate) -> Void)?
-
-    @_spi(SelectApp)
-    public var onDetection: ((DetectedBeacon) -> Void)?
-
-    /// Dependencies are factories/protocols rather than concrete Apple types so
-    /// tests can replace Core Location, time, and file storage deterministically.
     private let dependencies: SDKDependencies
-
-    /// Observation windows aggregate sightings into finalized reports.
-    /// `ActiveBeaconStore` remains separate for in-range UI presence.
     private var windowStore: ObservationWindowStore
     private var activeBeaconStore = ActiveBeaconStore()
-    private let presenceExpiryScheduler: PresenceExpiryScheduling
-    private let absenceExpiryScheduler: PresenceExpiryScheduling
+    private let presenceExpiryScheduler: DelayedActionScheduling
+    private let absenceExpiryScheduler: DelayedActionScheduling
 
-    /// These resources are created lazily. Creating the facade or configuring it
-    /// therefore never begins ranging, observes lifecycle notifications, or opens
-    /// the persisted queue.
+    /// Created lazily so configure/init never starts ranging, observers, or disk I/O.
     private var engine: DetectionEngine?
     private var permissionObserver: PermissionObserver?
     private var lifecycleObserver: ApplicationLifecycleObserving?
@@ -76,24 +58,25 @@ public final class SelectBeaconSDK {
     private var enablementConfiguration: SDKEnablementConfiguration?
     private var hasStarted = false
     private var session = RangingSessionState()
-    /// Incrementing this token invalidates work created by an earlier start/stop
-    /// session. It is the Swift equivalent of rejecting a stale async job result.
+
+    /// Invalidates adapter notifications from an earlier start/stop generation.
+    /// Already-finalized reports still persist; only callbacks are gated.
     private var deliverySession = 0
 
-    /// A serial async chain. A new ranging batch waits for its predecessor before
-    /// writing to disk so durable queue order matches Core Location delivery order.
+    /// Serial async chain so durable queue order matches Core Location delivery order.
     private var deliveryTask: Task<Void, Never>?
 
-    /// Active stop-finalize generation. Distinct from `deliveryTask`, which is
-    /// also used by ordinary window-close enqueues while ranging.
+    /// Active stop-finalize generation. Distinct from ordinary window-close enqueues.
     private var activeStopFinalizeGeneration: Int?
 
     private init() {
         dependencies = .live
         windowStore = ObservationWindowStore(configuration: SDKConfiguration.default)
-        presenceExpiryScheduler = TaskPresenceExpiryScheduler()
-        absenceExpiryScheduler = TaskPresenceExpiryScheduler()
+        presenceExpiryScheduler = TaskDelayedActionScheduler()
+        absenceExpiryScheduler = TaskDelayedActionScheduler()
     }
+
+    // MARK: - Public lifecycle
 
     /// Enables the SDK for this distributor or customer. Calling this does not begin detection.
     ///
@@ -119,14 +102,12 @@ public final class SelectBeaconSDK {
 
     /// Starts detection only when `configure(appKey:)` has completed.
     ///
-    /// This records the host's intent to range. Actual ranging still depends on
-    /// the host-owned location authorization and, for When-In-Use permission,
-    /// whether the app is foreground active.
+    /// Records host intent to range. Actual ranging still depends on host-owned
+    /// location authorization and, for When-In-Use, foreground activity.
     ///
     /// `deliverySession` is intentionally not bumped here. `stop()` already
-    /// invalidates in-flight ranging deliveries and schedules stop-finalize
-    /// enqueues under the new session; bumping again on `start()` would drop
-    /// those finalized open-window reports.
+    /// invalidates in-flight notifications and schedules stop-finalize under the
+    /// new session; bumping again on `start()` would drop those reports.
     public func start() {
         guard enablementConfiguration != nil else {
             updateOperationalStatus(.degraded(.startRequestedBeforeConfiguration))
@@ -143,13 +124,11 @@ public final class SelectBeaconSDK {
 
     /// Stops ranging and ends the active detection session.
     ///
-    /// Open observation windows are finalized and enqueued so an in-progress
-    /// minute is not lost. Pending disk work is cancelled or made stale with
-    /// `deliverySession`; already-committed queue records remain durable.
+    /// Open observation windows are finalized and enqueued. In-flight delivery
+    /// work is not cancelled so already-finalized reports finish persisting;
+    /// `deliverySession` only gates stale adapter notifications.
     public func stop() {
         deliverySession &+= 1
-        deliveryTask?.cancel()
-        deliveryTask = nil
         apply(session.stopRequested())
         let finalized = windowStore.finalizeAllOpenWindows()
         absenceExpiryScheduler.cancel()
@@ -161,9 +140,8 @@ public final class SelectBeaconSDK {
             setStopFinalizePending(true)
             enqueueFinalizedReports(finalized, stopFinalizeGeneration: generation)
         } else if activeStopFinalizeGeneration == nil {
-            // No armed stop-finalize work. Do not clear an in-flight prior
-            // generation here: a cancelled finalize task may still be inside
-            // `queue.enqueue`, and Start must stay gated until it settles.
+            // Do not clear an in-flight prior generation: a prior finalize task
+            // may still be writing, and Start must stay gated until it settles.
             setStopFinalizePending(false)
         }
         notifyOpenWindowsChanged()
@@ -189,6 +167,8 @@ public final class SelectBeaconSDK {
         )
     }
 
+    // MARK: - Configuration
+
     func configure(identity: AppIdentity, environment: Environment) {
         guard !hasStarted else {
             updateOperationalStatus(.degraded(.configurationLocked))
@@ -202,9 +182,8 @@ public final class SelectBeaconSDK {
             updateOperationalStatus(.degraded(.invalidConfiguration))
             return
         }
-        // A pre-start reconfiguration can change the customer or endpoint.
-        // The queue namespace derives from both, so an already materialized
-        // queue must never carry over into the new configuration.
+        // Pre-start reconfiguration can change customer or endpoint; the queue
+        // namespace derives from both, so drop any already-materialized queue.
         queue = nil
         enablementConfiguration = configuration
         session.configure()
@@ -212,17 +191,13 @@ public final class SelectBeaconSDK {
     }
 
     private func invalidateConfiguration() {
-        // Do not leave a previous customer key or queue usable after a failed
-        // replacement attempt. `start()` will now surface the configuration
-        // failure instead of silently ranging under stale credentials.
         enablementConfiguration = nil
         queue = nil
     }
 
+    // MARK: - Observer and coordinator setup
+
     private func prepareObserversIfNeeded() {
-        // These observer closures are intentionally weak. Notification observers
-        // may outlive a particular SDK instance in tests, so they must not retain
-        // the facade through a reference cycle.
         if permissionObserver == nil {
             let observer = dependencies.permissionObserverFactory()
             observer.onAuthorizationChanged = { [weak self] authorization in
@@ -237,8 +212,6 @@ public final class SelectBeaconSDK {
             observer.onActivityChanged = { [weak self] isActive in
                 guard let self else { return }
                 self.apply(self.session.applicationActivityChanged(isActive))
-                // Lifecycle transitions flush opportunistically. Sparse
-                // region-entry wakes never call flush from `handle(_:)`.
                 self.uploadCoordinator?.setForeground(isActive)
                 self.uploadCoordinator?.flushOpportunistically()
             }
@@ -307,10 +280,9 @@ public final class SelectBeaconSDK {
         )
     }
 
+    // MARK: - Ranging
+
     private func apply(_ effect: RangingSessionState.Effect) {
-        // `RangingSessionState` owns policy; this method performs its requested
-        // side effect. Keeping the decision and effect separate makes the policy
-        // a pure, easily tested state machine.
         switch effect {
         case .none:
             break
@@ -349,7 +321,7 @@ public final class SelectBeaconSDK {
         var acceptedSighting = false
 
         for beacon in beacons {
-            // Core Location reports 0 for unavailable RSSI; it cannot support aggregates.
+            // Engine already drops unknown RSSI (0); keep a defensive guard here.
             guard beacon.rssi < 0 else { continue }
             acceptedSighting = true
             let observation = BeaconObservation(
@@ -362,35 +334,21 @@ public final class SelectBeaconSDK {
             activeBeaconStore.record(observation)
             notifyActiveBeaconsChanged()
             schedulePresenceExpiry()
-            onBeaconObserved?(observation)
 
-            let sighting = BeaconSighting(
-                uuid: beacon.uuid,
-                major: beacon.major,
-                minor: beacon.minor,
-                rssi: beacon.rssi
-            )
             let effect = windowStore.process(
-                sighting: sighting,
+                beacon: beacon,
                 location: cachedLocation,
                 now: now
             )
             switch effect {
             case .updated:
-                onBeaconActivityUpdated?(
-                    BeaconActivityUpdate(
-                        observation: observation,
-                        disposition: .windowUpdated,
-                        report: nil
-                    )
-                )
+                break
             case .closed(let report, _):
                 finalizedReports.append(report)
             }
         }
 
         if acceptedSighting {
-            // Quiet debounce is sighting-driven; never flush from a ranging wake.
             uploadCoordinator?.noteSightingActivity()
             notifyOpenWindowsChanged()
         }
@@ -399,6 +357,8 @@ public final class SelectBeaconSDK {
             enqueueFinalizedReports(finalizedReports)
         }
     }
+
+    // MARK: - Durable report persistence
 
     private func enqueueFinalizedReports(
         _ reports: [FinalizedBeaconReport],
@@ -411,18 +371,27 @@ public final class SelectBeaconSDK {
         deliveryTask = Task { @MainActor [weak self] in
             await precedingTask?.value
             await self?.deliver(detections, for: session)
-            // Clear only when this task still owns the active stop generation so
-            // a cancelled prior stop-finalize cannot hide newer pending work.
             if let stopFinalizeGeneration {
-                self?.completeStopFinalizeIfCurrent(stopFinalizeGeneration)
+                await self?.completeStopFinalizeIfCurrent(
+                    stopFinalizeGeneration,
+                    deliverySession: session
+                )
             }
         }
     }
 
-    private func completeStopFinalizeIfCurrent(_ generation: Int) {
+    private func completeStopFinalizeIfCurrent(
+        _ generation: Int,
+        deliverySession: Int
+    ) async {
         guard activeStopFinalizeGeneration == generation else { return }
         activeStopFinalizeGeneration = nil
         setStopFinalizePending(false)
+        // Current-session enqueues already published their snapshots. A later
+        // stop suppresses those stale callbacks, so publish once on settlement.
+        if deliverySession != self.deliverySession {
+            await publishPendingReportsSnapshot()
+        }
     }
 
     private func setStopFinalizePending(_ pending: Bool) {
@@ -433,35 +402,21 @@ public final class SelectBeaconSDK {
 
     private func deliver(_ detections: [QueuedDetection], for session: Int) async {
         for detection in detections {
-            guard shouldDeliver(for: session) else { return }
             await enqueue(detection, for: session)
         }
     }
 
     private func enqueue(_ detection: QueuedDetection, for session: Int) async {
         do {
-            guard shouldDeliver(for: session),
-                  let configuration = enablementConfiguration else {
-                return
-            }
+            guard let configuration = enablementConfiguration else { return }
             let queue = self.queue ?? dependencies.queueFactory(configuration.queueStorageIdentifier)
             self.queue = queue
-            // Crossing this `await` enters the queue actor. Swift allows other
-            // main-actor work to run while file I/O is in progress, so validate
-            // the session again after resuming.
+            // Persist even when deliverySession advanced: finalized reports must
+            // not be abandoned. Adapter notifications stay session-gated below.
             try await queue.enqueue(detection)
-            guard shouldDeliver(for: session) else { return }
-            let report = BeaconReport(id: detection.id, status: .queued)
-            onBeaconReportStatusUpdated?(BeaconReportStatusUpdate(report: report))
-            onBeaconActivityUpdated?(
-                BeaconActivityUpdate(
-                    observation: observation(for: detection),
-                    disposition: .reportCreated(reportID: detection.id),
-                    report: report
-                )
-            )
-            onDetection?(detection.beacon)
-            await notifyPendingReportsChanged(for: session)
+            if shouldNotify(for: session) {
+                await notifyPendingReportsChanged(for: session)
+            }
             await uploadCoordinator?.noteQueueChanged()
         } catch {
             let event: DiagnosticEvent
@@ -478,28 +433,10 @@ public final class SelectBeaconSDK {
                         : .durableQueueWriteFailed
                 )
             )
-            guard shouldDeliver(for: session) else { return }
-            let report = BeaconReport(id: detection.id, status: .failed)
-            onBeaconReportStatusUpdated?(BeaconReportStatusUpdate(report: report))
-            onBeaconActivityUpdated?(
-                BeaconActivityUpdate(
-                    observation: observation(for: detection),
-                    disposition: .reportFailed(reportID: detection.id),
-                    report: report
-                )
-            )
         }
     }
 
-    private func observation(for detection: QueuedDetection) -> BeaconObservation {
-        BeaconObservation(
-            uuid: detection.uuid,
-            major: detection.major,
-            minor: detection.minor,
-            rssi: detection.bestRSSI,
-            observedAt: detection.latestTimestamp
-        )
-    }
+    // MARK: - AppSupport snapshots
 
     @_spi(SelectApp)
     public var selectActiveBeaconObservations: [BeaconObservation] {
@@ -513,8 +450,6 @@ public final class SelectBeaconSDK {
 
     @_spi(SelectApp)
     public func selectPendingReports() async throws -> [SelectPendingBeaconReport] {
-        // This is a read-only FIFO snapshot. It may load a file created by a
-        // previous app launch, so callers must handle the async/throwing boundary.
         guard let configuration = enablementConfiguration else { return [] }
         let queue = self.queue ?? dependencies.queueFactory(configuration.queueStorageIdentifier)
         self.queue = queue
@@ -542,8 +477,6 @@ public final class SelectBeaconSDK {
         self.queue = queue
         try await queue.clear()
 
-        // Clearing overwrites corrupted payloads, so recover unreadable
-        // degradation when the session is otherwise healthy.
         if case .degraded(.durableQueueUnreadable) = operationalStatus {
             updateOperationalStatusForSession()
         }
@@ -612,7 +545,7 @@ public final class SelectBeaconSDK {
     private func notifyPendingReportsChanged(for session: Int) async {
         do {
             let reports = try await selectPendingReports()
-            guard shouldDeliver(for: session) else { return }
+            guard shouldNotify(for: session) else { return }
             onSelectPendingReportsChanged?(reports)
         } catch {
             dependencies.diagnosticsReporter.record(.durableQueueUnreadable, error: error)
@@ -620,10 +553,8 @@ public final class SelectBeaconSDK {
         }
     }
 
-    /// Publishes the pending-queue snapshot after upload acknowledgement.
-    ///
-    /// Unlike delivery-session notifications, this is not gated by ranging
-    /// session tokens — a background flush may complete after `stop()`.
+    /// Publishes the pending-queue snapshot after upload acknowledgement or
+    /// stop-finalize settlement. Not gated by ranging delivery sessions.
     private func publishPendingReportsSnapshot() async {
         do {
             let reports = try await selectPendingReports()
@@ -633,6 +564,8 @@ public final class SelectBeaconSDK {
             updateOperationalStatus(.degraded(.durableQueueUnreadable))
         }
     }
+
+    // MARK: - Operational status
 
     private func updateOperationalStatusForSession() {
         guard enablementConfiguration != nil else {
@@ -661,14 +594,14 @@ public final class SelectBeaconSDK {
         onOperationalStatusChanged?(status)
     }
 
-    private func shouldDeliver(for session: Int) -> Bool {
-        // This protects every callback after an async boundary from an earlier
-        // explicit start/stop session. Do not require `isRanging` here: a
-        // temporary permission or foreground pause can stop ranging while an
-        // already-started durable write finishes, and the adapter still needs
-        // to learn that the report was queued.
-        !Task.isCancelled && session == deliverySession
+    private func shouldNotify(for session: Int) -> Bool {
+        // Protects callbacks after an async boundary from an earlier start/stop
+        // generation. Do not require `isRanging`: a temporary pause can stop
+        // ranging while an already-started durable write finishes.
+        session == deliverySession
     }
+
+    // MARK: - Test seams
 
     init(
         engine: @escaping () -> DetectionEngine,
@@ -680,13 +613,13 @@ public final class SelectBeaconSDK {
         authProvider: @escaping () -> AuthProvider = { DeferredAuthProvider() },
         uploadTransport: @escaping () -> UploadTransport = { DeferredUploadTransport() },
         networkPathObserver: @escaping () -> NetworkPathObserving = { NetworkPathObserver() },
-        quietDebounceScheduler: @escaping () -> SendDebounceScheduling = { TaskSendDebounceScheduler() },
-        maxAgeScheduler: @escaping () -> SendDebounceScheduling = { TaskSendDebounceScheduler() },
-        retryBackoffScheduler: @escaping () -> SendDebounceScheduling = { TaskSendDebounceScheduler() },
+        quietDebounceScheduler: @escaping () -> DelayedActionScheduling = { TaskDelayedActionScheduler() },
+        maxAgeScheduler: @escaping () -> DelayedActionScheduling = { TaskDelayedActionScheduler() },
+        retryBackoffScheduler: @escaping () -> DelayedActionScheduling = { TaskDelayedActionScheduler() },
         deviceIdentifier: @escaping () -> DeviceIdentifying = { VendorDeviceIdentifier() },
         diagnosticsReporter: DiagnosticsReporting = NoopDiagnosticsReporter(),
-        presenceExpiryScheduler: PresenceExpiryScheduling = TaskPresenceExpiryScheduler(),
-        absenceExpiryScheduler: PresenceExpiryScheduling = TaskPresenceExpiryScheduler(),
+        presenceExpiryScheduler: DelayedActionScheduling = TaskDelayedActionScheduler(),
+        absenceExpiryScheduler: DelayedActionScheduling = TaskDelayedActionScheduler(),
         identity: AppIdentity?,
         environment: Environment = .production
     ) {
@@ -729,17 +662,4 @@ public final class SelectBeaconSDK {
     var configuredEndpoint: APIEndpoint? {
         enablementConfiguration?.endpoint
     }
-
-    var hasCreatedEngine: Bool {
-        engine != nil
-    }
-}
-
-// MARK: - The seam: a protocol the real engine and a fake engine both satisfy
-
-@MainActor
-protocol DetectionEngine: AnyObject {
-    var onBeacons: (([DetectedBeacon]) -> Void)? { get set }
-    func start(uuids: [UUID])
-    func stop()
 }

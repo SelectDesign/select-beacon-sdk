@@ -25,7 +25,8 @@ AppSupport callbacks (do not keep a local “sent” history unless product asks
 4. Optional for local demos only:  
    `SelectBeaconSDK.shared.selectInstallDebugAutoAckUploadSeams()`  
    (`@_spi(SelectApp)` on the SDK module) so flushes auto-acknowledge without a
-   real VIP API. Production builds leave the deferred transport.
+   real VIP API. Explicit staging URLs use live auth/HTTP; production remains
+   disabled while its host is `REPLACE_ME_PRODUCTION`.
 
 ## Bindings
 
@@ -44,7 +45,7 @@ treat `currentOpenWindows == []` as “safe to start.” Gate Start on
 `onStopFinalizePendingChanged`).
 
 A second `stop()` with no open windows does **not** clear finalize-pending early
-while a cancelled finalize write may still be in flight; wait for the flag.
+while the durable finalize batch is still in flight; wait for the flag.
 
 ### In range (`ActiveBeacon`)
 

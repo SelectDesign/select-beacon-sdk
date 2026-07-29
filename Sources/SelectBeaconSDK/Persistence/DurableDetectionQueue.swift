@@ -2,9 +2,9 @@ import Foundation
 
 /// The on-disk representation of one finalized observation-window report.
 ///
-/// This type is intentionally separate from live ranging models: it includes a
-/// generated queue-record ID and window aggregates so a future uploader can
-/// retry and acknowledge one durable record.
+/// Separate from live ranging models: includes a generated queue-record ID and
+/// window aggregates so the upload coordinator can retry and acknowledge one
+/// durable record.
 struct QueuedDetection: Codable, Equatable, Sendable {
     let id: UUID
     let uuid: UUID
@@ -31,22 +31,6 @@ struct QueuedDetection: Codable, Equatable, Sendable {
         self.queuedAt = queuedAt
     }
 
-    /// Convenience for tests and single-sighting seeds.
-    init(detection: DetectedBeacon, detectedAt: Date, location: LocationFix? = nil) {
-        self.init(
-            uuid: detection.uuid,
-            major: detection.major,
-            minor: detection.minor,
-            bestRSSI: detection.rssi,
-            latestTimestamp: detectedAt,
-            windowStartedAt: detectedAt,
-            observationCount: 1,
-            location: location,
-            queuedAt: detectedAt
-        )
-    }
-
-    /// Legacy single-sighting initializer retained for older tests that seed queue records.
     init(
         uuid: UUID,
         major: Int,
@@ -68,10 +52,6 @@ struct QueuedDetection: Codable, Equatable, Sendable {
         self.observationCount = observationCount
         self.location = location
         self.queuedAt = queuedAt
-    }
-
-    var beacon: DetectedBeacon {
-        DetectedBeacon(uuid: uuid, major: major, minor: minor, rssi: bestRSSI)
     }
 
     /// Maps the private persistence record into the Select adapter's read-only
@@ -236,8 +216,8 @@ actor FileDetectionQueue: DurableDetectionQueue {
     }
 
     func nextBatch(limit: Int) async throws -> [QueuedDetection] {
-        // This is a non-destructive peek. Records leave the queue only through
-        // `acknowledge`, after a future uploader has a confirmed API response.
+        // Non-destructive peek. Records leave the queue only through `acknowledge`
+        // after the upload transport reports HTTP 200 for the batch.
         try loadIfNeeded()
         return Array(records.prefix(Swift.max(0, limit)))
     }

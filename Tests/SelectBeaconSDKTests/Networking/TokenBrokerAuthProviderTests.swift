@@ -217,15 +217,7 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
             fileStore: fileStore,
             fileURL: fileURL
         )
-        let detection = QueuedDetection(
-            detection: DetectedBeacon(
-                uuid: SDKConfiguration.default.monitoredUUIDs[0],
-                major: 1,
-                minor: 42,
-                rssi: -55
-            ),
-            detectedAt: initialDate
-        )
+        let detection = QueuedDetectionFixtures.make(latestTimestamp: initialDate)
 
         try await queue.enqueue(detection)
         let token = try await provider.validToken()

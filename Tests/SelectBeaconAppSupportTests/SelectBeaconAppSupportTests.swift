@@ -66,7 +66,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
     }
 
     @MainActor
-    final class ManualPresenceExpiryScheduler: PresenceExpiryScheduling {
+    final class ManualDelayedActionScheduler: DelayedActionScheduling {
         private var action: (@MainActor () -> Void)?
 
         func schedule(after delay: TimeInterval, action: @escaping @MainActor () -> Void) {
@@ -161,11 +161,27 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         }
     }
 
+    private func waitForQueueRecord(
+        _ queue: InMemoryQueue,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 1_000_000_000
+        while queue.records.isEmpty,
+              DispatchTime.now().uptimeNanoseconds < deadline {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        if queue.records.isEmpty {
+            XCTFail("Timed out waiting for a queued report", file: file, line: line)
+        }
+    }
+
     func testAdapterPublishesActiveAndPendingSnapshots() async throws {
         let engine = FakeEngine()
         let queue = InMemoryQueue()
         let clock = MutableClock(now: Date(timeIntervalSince1970: 1_000_000))
-        let absenceScheduler = ManualPresenceExpiryScheduler()
+        let absenceScheduler = ManualDelayedActionScheduler()
         let sdk = SelectBeaconSDK(
             engine: { engine },
             permissionObserver: { FakePermissionObserver() },
@@ -223,7 +239,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         let queue = InMemoryQueue()
         let lifecycle = FakeLifecycleObserver()
         let clock = MutableClock(now: Date(timeIntervalSince1970: 1_000_000))
-        let absenceScheduler = ManualPresenceExpiryScheduler()
+        let absenceScheduler = ManualDelayedActionScheduler()
         let sdk = SelectBeaconSDK(
             engine: { engine },
             permissionObserver: { FakePermissionObserver() },
@@ -238,10 +254,12 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         let adapter = SelectBeaconAppSupport(sdk: sdk)
 
         var sawQueued = false
+        let queued = expectation(description: "Queue publishes durable report")
         let emptied = expectation(description: "Queue emptied after ack")
         adapter.onPendingReportsChanged = { reports in
-            if reports.map(\.minor) == [42] {
+            if reports.map(\.minor) == [42], !sawQueued {
                 sawQueued = true
+                queued.fulfill()
             }
             if reports.isEmpty, sawQueued {
                 emptied.fulfill()
@@ -260,12 +278,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         clock.now = clock.now.addingTimeInterval(SDKConfiguration.default.absenceTimeout + 0.1)
         absenceScheduler.fire()
 
-        for _ in 0..<40 {
-            if !queue.records.isEmpty { break }
-            await Task.yield()
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
-        XCTAssertFalse(queue.records.isEmpty)
+        await fulfillment(of: [queued], timeout: 1)
         lifecycle.setActive(false)
 
         await fulfillment(of: [emptied], timeout: 2)
@@ -332,7 +345,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         let engine = FakeEngine()
         let queue = InMemoryQueue()
         let clock = MutableClock(now: Date(timeIntervalSince1970: 1_000_000))
-        let absenceScheduler = ManualPresenceExpiryScheduler()
+        let absenceScheduler = ManualDelayedActionScheduler()
         let sdk = SelectBeaconSDK(
             engine: { engine },
             permissionObserver: { FakePermissionObserver() },
@@ -362,12 +375,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         ])
         clock.now = clock.now.addingTimeInterval(SDKConfiguration.default.absenceTimeout + 0.1)
         absenceScheduler.fire()
-        for _ in 0..<40 {
-            if !queue.records.isEmpty { break }
-            await Task.yield()
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
-        XCTAssertFalse(queue.records.isEmpty)
+        await waitForQueueRecord(queue)
 
         sdk.stop()
         try await adapter.clearPendingReports()
@@ -396,5 +404,42 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         } catch let error as PendingReportsClearError {
             XCTAssertEqual(error, .detectionActive)
         }
+    }
+
+    func testClearPendingReportsMapsStopFinalizePendingError() async throws {
+        let engine = FakeEngine()
+        let queue = BlockingQueue()
+        let sdk = SelectBeaconSDK(
+            engine: { engine },
+            permissionObserver: { FakePermissionObserver() },
+            lifecycleObserver: { FakeLifecycleObserver() },
+            clock: MutableClock(now: Date(timeIntervalSince1970: 1_000_000)),
+            queue: { _ in queue },
+            networkPathObserver: { FakeNetworkPathObserver() },
+            identity: AppIdentity(appKey: "select-app")
+        )
+        let adapter = SelectBeaconAppSupport(sdk: sdk)
+
+        sdk.start()
+        engine.emit([
+            DetectedBeacon(
+                uuid: SDKConfiguration.default.monitoredUUIDs[0],
+                major: 1,
+                minor: 42,
+                rssi: -55
+            ),
+        ])
+        sdk.stop()
+        await queue.waitForWriteStart()
+
+        do {
+            try await adapter.clearPendingReports()
+            XCTFail("Expected stopFinalizePending")
+        } catch let error as PendingReportsClearError {
+            XCTAssertEqual(error, .stopFinalizePending)
+        }
+
+        await queue.releaseNextWrite()
+        await queue.waitForWriteCompletion()
     }
 }

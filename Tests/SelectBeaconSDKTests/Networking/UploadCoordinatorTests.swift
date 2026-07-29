@@ -90,7 +90,8 @@ final class UploadCoordinatorTests: XCTestCase {
         }
     }
 
-    final class ManualScheduler: SendDebounceScheduling {
+    @MainActor
+    final class ManualScheduler: DelayedActionScheduling {
         private(set) var scheduledDelays: [TimeInterval] = []
         private var action: (@MainActor () -> Void)?
 
@@ -140,11 +141,7 @@ final class UploadCoordinatorTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_000_000)
 
     private func makeDetection(minor: Int = 42, queuedAt: Date? = nil) -> QueuedDetection {
-        let at = queuedAt ?? t0
-        return QueuedDetection(
-            detection: DetectedBeacon(uuid: fleetUUID, major: 1, minor: minor, rssi: -55),
-            detectedAt: at
-        )
+        QueuedDetectionFixtures.make(minor: minor, latestTimestamp: queuedAt ?? t0, queuedAt: queuedAt ?? t0)
     }
 
     private func makeCoordinator(
@@ -190,13 +187,59 @@ final class UploadCoordinatorTests: XCTestCase {
 
     private func waitForFlush(
         queue: FakeQueue,
-        timeoutNanoseconds: UInt64 = 200_000_000
+        timeoutNanoseconds: UInt64 = 1_000_000_000,
+        file: StaticString = #filePath,
+        line: UInt = #line
     ) async {
         let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
         while !queue.records.isEmpty,
               DispatchTime.now().uptimeNanoseconds < deadline {
             await Task.yield()
             try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        if !queue.records.isEmpty {
+            XCTFail(
+                "Timed out waiting for upload; \(queue.records.count) record(s) remain",
+                file: file,
+                line: line
+            )
+        }
+    }
+
+    private func waitForSchedules(
+        _ count: Int,
+        scheduler: ManualScheduler,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 1_000_000_000
+        while scheduler.scheduledDelays.count < count,
+              DispatchTime.now().uptimeNanoseconds < deadline {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        if scheduler.scheduledDelays.count < count {
+            XCTFail(
+                "Timed out waiting for \(count) schedules; got \(scheduler.scheduledDelays)",
+                file: file,
+                line: line
+            )
+        }
+    }
+
+    private func waitUntil(
+        _ description: String,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: @escaping @MainActor () -> Bool
+    ) async {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 1_000_000_000
+        while !condition(), DispatchTime.now().uptimeNanoseconds < deadline {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        if !condition() {
+            XCTFail("Timed out waiting for \(description)", file: file, line: line)
         }
     }
 
@@ -265,6 +308,20 @@ final class UploadCoordinatorTests: XCTestCase {
 
         // maxQueueAge 300 - already waited 100 => delay 200
         XCTAssertEqual(maxAge.scheduledDelays.last, 200)
+    }
+
+    func testStartRestoresMaxAgeScheduleForExistingBacklog() async {
+        let queue = FakeQueue(records: [makeDetection(queuedAt: t0)])
+        let clock = MutableClock(now: t0.addingTimeInterval(100))
+        let (coordinator, _, _, _, _, maxAge, _, _, _) = makeCoordinator(
+            queue: queue,
+            clock: clock
+        )
+
+        coordinator.start()
+        await waitForSchedules(1, scheduler: maxAge)
+
+        XCTAssertEqual(maxAge.scheduledDelays, [200])
     }
 
     func testMaxQueueAgeForcesFlushWhileNeverQuiet() async {
@@ -361,6 +418,25 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(transport.uploads.first?.map(\.minor), [3])
     }
 
+    func testStopStartRearmsPathObservationAndConnectivityFlush() async {
+        let queue = FakeQueue(records: [makeDetection(minor: 4)])
+        let path = FakePathObserver(isSatisfied: false)
+        let (coordinator, _, transport, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            path: path
+        )
+
+        coordinator.start()
+        coordinator.stop()
+        coordinator.start()
+        path.setSatisfied(true)
+        await waitForFlush(queue: queue)
+
+        XCTAssertEqual(path.startCount, 2)
+        XCTAssertEqual(path.stopCount, 1)
+        XCTAssertEqual(transport.uploads.first?.map(\.minor), [4])
+    }
+
     func testFailedUploadRetainsQueueAndReportsDiagnostics() async {
         let queue = FakeQueue(records: [makeDetection()])
         let transport = FakeTransport()
@@ -380,6 +456,31 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(queue.records.count, 1)
         XCTAssertEqual(diagnostics.events, [.uploadFailed])
         XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
+    }
+
+    func testRetryBackoffDoublesAndCapsAtMaximum() async {
+        let queue = FakeQueue(records: [makeDetection()])
+        let transport = FakeTransport()
+        transport.shouldFail = true
+        let retry = ManualScheduler()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            transport: transport,
+            retry: retry
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        let expected: [TimeInterval] = [15, 30, 60, 120, 240, 300, 300]
+        for index in expected.indices {
+            await waitForSchedules(index + 1, scheduler: retry)
+            XCTAssertEqual(retry.scheduledDelays[index], expected[index])
+            if index < expected.count - 1 {
+                retry.fire()
+            }
+        }
+
+        XCTAssertEqual(queue.records.count, 1)
     }
 
     func testNoteQueueChangedDoesNotScheduleQuietDebounce() async {
@@ -475,6 +576,7 @@ final class UploadCoordinatorTests: XCTestCase {
         coordinator.start()
         coordinator.flushOpportunistically()
         await waitForFlush(queue: queue)
+        await waitUntil("two acknowledgement callbacks") { ackCount == 2 }
 
         XCTAssertEqual(transport.uploads.count, 2)
         XCTAssertEqual(ackCount, 2)

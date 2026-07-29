@@ -1,5 +1,4 @@
 import XCTest
-import CoreLocation
 @testable import SelectBeaconSDK
 
 final class RangingSessionStateTests: XCTestCase {
@@ -35,5 +34,31 @@ final class RangingSessionStateTests: XCTestCase {
         state.didStartRanging()
         XCTAssertEqual(state.applicationActivityChanged(false), .none)
     }
-}
 
+    func testStopRequestedWhileRangingStops() {
+        var state = RangingSessionState()
+        state.configure()
+        _ = state.authorizationChanged(.always)
+        XCTAssertEqual(state.startRequested(), .startRanging)
+        state.didStartRanging()
+        XCTAssertEqual(state.stopRequested(), .stopRanging)
+    }
+
+    func testUnavailableWhileRangingStops() {
+        var state = RangingSessionState()
+        state.configure()
+        _ = state.authorizationChanged(.always)
+        XCTAssertEqual(state.startRequested(), .startRanging)
+        state.didStartRanging()
+        XCTAssertEqual(state.authorizationChanged(.unavailable), .stopRanging)
+    }
+
+    func testStartWhenAlreadyRangingIsNoOp() {
+        var state = RangingSessionState()
+        state.configure()
+        _ = state.authorizationChanged(.always)
+        XCTAssertEqual(state.startRequested(), .startRanging)
+        state.didStartRanging()
+        XCTAssertEqual(state.startRequested(), .none)
+    }
+}

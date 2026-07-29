@@ -5,6 +5,21 @@ enum LocationAuthorization: Equatable {
     case whenInUse
     case always
     case unavailable
+
+    init(status: CLAuthorizationStatus) {
+        switch status {
+        case .authorizedAlways:
+            self = .always
+        case .authorizedWhenInUse:
+            self = .whenInUse
+        case .notDetermined:
+            self = .notDetermined
+        case .denied, .restricted:
+            self = .unavailable
+        @unknown default:
+            self = .unavailable
+        }
+    }
 }
 
 @MainActor
@@ -27,20 +42,8 @@ final class CoreLocationPermissionObserver: NSObject, PermissionObserver {
     }
 
     var authorization: LocationAuthorization {
-        switch locationManager.authorizationStatus {
-        case .authorizedAlways:
-            return .always
-        case .authorizedWhenInUse:
-            return .whenInUse
-        case .notDetermined:
-            return .notDetermined
-        case .denied, .restricted:
-            return .unavailable
-        @unknown default:
-            return .unavailable
-        }
+        LocationAuthorization(status: locationManager.authorizationStatus)
     }
-
 }
 
 extension CoreLocationPermissionObserver: @MainActor CLLocationManagerDelegate {
