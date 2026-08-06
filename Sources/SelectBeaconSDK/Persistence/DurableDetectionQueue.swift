@@ -221,9 +221,16 @@ protocol FileStoring: Sendable {
     func data(at url: URL) throws -> Data?
     func createDirectory(at url: URL) throws
     func writeAtomically(_ data: Data, to url: URL) throws
+    /// Applies Data Protection to an existing file or directory (no-op if missing).
+    func applyDataProtection(at url: URL) throws
 }
 
 struct DefaultFileStore: FileStoring {
+    /// Class C — accessible after first unlock, including while locked later.
+    /// Prefer this over `.complete` so background region wakes can still enqueue
+    /// when the device is locked after the user has unlocked once since boot.
+    static let durableFileProtection: FileProtectionType = .completeUntilFirstUserAuthentication
+
     func data(at url: URL) throws -> Data? {
         guard FileManager.default.fileExists(atPath: url.path) else {
             return nil
@@ -232,11 +239,31 @@ struct DefaultFileStore: FileStoring {
     }
 
     func createDirectory(at url: URL) throws {
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: url,
+            withIntermediateDirectories: true,
+            attributes: [.protectionKey: Self.durableFileProtection]
+        )
+        // Re-apply so directories created by an older SDK build also get Class C.
+        try applyDataProtection(at: url)
     }
 
     func writeAtomically(_ data: Data, to url: URL) throws {
-        try data.write(to: url, options: .atomic)
+        // `.completeFileProtectionUntilFirstUserAuthentication` (not `.completeFileProtection`):
+        // background beacon wakes must be able to write while the device is locked,
+        // after the user has unlocked once since boot. `.complete` would block those writes.
+        try data.write(
+            to: url,
+            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        )
+    }
+
+    func applyDataProtection(at url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.setAttributes(
+            [.protectionKey: Self.durableFileProtection],
+            ofItemAtPath: url.path
+        )
     }
 }
 
@@ -373,6 +400,7 @@ actor FileDetectionQueue: DurableDetectionQueue {
 
     private func loadIfNeeded() throws {
         guard !hasLoaded else { return }
+        try ensureProtectedStorage(for: fileURL)
         guard let data = try fileStore.data(at: fileURL) else {
             hasLoaded = true
             return
@@ -388,6 +416,7 @@ actor FileDetectionQueue: DurableDetectionQueue {
 
     private func loadDeadLettersIfNeeded() throws {
         guard !hasLoadedDeadLetters else { return }
+        try ensureProtectedStorage(for: deadLetterURL)
         guard let data = try fileStore.data(at: deadLetterURL) else {
             hasLoadedDeadLetters = true
             return
@@ -401,15 +430,23 @@ actor FileDetectionQueue: DurableDetectionQueue {
     }
 
     private func persist() throws {
-        try fileStore.createDirectory(at: fileURL.deletingLastPathComponent())
+        try ensureProtectedStorage(for: fileURL)
         let data = try JSONEncoder().encode(records)
         try fileStore.writeAtomically(data, to: fileURL)
     }
 
     private func persistDeadLetters() throws {
-        try fileStore.createDirectory(at: deadLetterURL.deletingLastPathComponent())
+        try ensureProtectedStorage(for: deadLetterURL)
         let data = try JSONEncoder().encode(deadLetters)
         try fileStore.writeAtomically(data, to: deadLetterURL)
+    }
+
+    /// Ensures the parent directory and any existing file use Class C Data Protection
+    /// so legacy installs migrate and new files inherit the directory class.
+    private func ensureProtectedStorage(for fileURL: URL) throws {
+        let directoryURL = fileURL.deletingLastPathComponent()
+        try fileStore.createDirectory(at: directoryURL)
+        try fileStore.applyDataProtection(at: fileURL)
     }
 
     private static func defaultFileURL(storageIdentifier: String, fileNamePrefix: String) -> URL {

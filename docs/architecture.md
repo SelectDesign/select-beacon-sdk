@@ -227,7 +227,11 @@ part of the standard public API; Select pending reports may include it.
   run file I/O on the main actor.
 - `FileDetectionQueue`: actor-isolated, JSON file-backed implementation with
   atomic writes.
-- `FileStoring`: file I/O seam for error and relaunch tests.
+- `FileStoring` / `DefaultFileStore`: file I/O seam. Pending and dead-letter JSON
+  under Application Support/`SelectBeaconSDK/` are written with Data Protection
+  class **completeUntilFirstUserAuthentication** (Class C) — not `.complete` —
+  so background region wakes can enqueue while the device is locked after first
+  unlock. Existing files/directories are migrated to that class on load.
 
 A reportable detection is appended to a serial delivery chain before it reaches
 the queue actor. This preserves ranging-batch order across durable writes.

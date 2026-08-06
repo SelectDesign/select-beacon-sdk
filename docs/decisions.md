@@ -67,6 +67,10 @@
   stop-finalize has settled. Clearing intentionally overwrites corrupt payloads.
 - Never overwrite unreadable pending detections during normal load/enqueue.
   Surface a typed queue-load error until storage is cleared.
+- Pending and dead-letter files (and their Application Support directory) use
+  Data Protection `completeUntilFirstUserAuthentication`, not `.complete`, so
+  background wakes can write while locked after first unlock. Tokens/secrets
+  stay memory-only and are never written to these stores.
 
 ## Upload and authentication
 

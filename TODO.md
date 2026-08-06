@@ -80,8 +80,9 @@ limitation.
       Sentry (or equivalent) without shipping Sentry inside this package.
 - [ ] Decide HTTPS-only for staging (today cleartext `http` is allowed if a
       caller supplies it).
-- [ ] Decide durable-queue file protection / Data Protection expectations for
-      on-disk beacon + location records.
+- [x] Durable-queue / dead-letter Data Protection:
+      `FileProtectionType.completeUntilFirstUserAuthentication` on files and
+      containing directory (migrates existing files on load).
 - [ ] Harness UI: surface first-seen / last-seen / best RSSI / observations /
       lat-lng / **Cached location time** on open + queued rows to match ingest
       fields.

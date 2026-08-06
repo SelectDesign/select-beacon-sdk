@@ -23,6 +23,8 @@ final class FileDetectionQueueTests: XCTestCase {
         func writeAtomically(_ data: Data, to url: URL) throws {
             throw WriteError()
         }
+
+        func applyDataProtection(at url: URL) throws {}
     }
 
     final class FailsAfterFirstWriteFileStore: FileStoring, @unchecked Sendable {
@@ -44,6 +46,8 @@ final class FileDetectionQueueTests: XCTestCase {
             }
             files[url] = data
         }
+
+        func applyDataProtection(at url: URL) throws {}
     }
 
     func testQueueSurvivesReloadAndAcknowledgesInOrder() async throws {
@@ -385,6 +389,143 @@ final class FileDetectionQueueTests: XCTestCase {
         XCTAssertTrue(pending.isEmpty)
         let dead = try await queue.deadLetteredRecords()
         XCTAssertEqual(dead.map(\.minor), [9])
+    }
+
+    func testEnqueueAppliesCompleteUntilFirstUserAuthenticationToFilesAndDirectory() async throws {
+        let fileStore = MemoryFileStore()
+        let fileURL = URL(fileURLWithPath: "/protected/pending.json")
+        let deadLetterURL = URL(fileURLWithPath: "/protected/dead.json")
+        let directoryURL = fileURL.deletingLastPathComponent()
+        let queue = FileDetectionQueue(
+            storageIdentifier: "protected",
+            fileStore: fileStore,
+            fileURL: fileURL,
+            deadLetterURL: deadLetterURL
+        )
+
+        _ = try await queue.enqueue(
+            QueuedDetectionFixtures.make(minor: 1),
+            now: Date(timeIntervalSince1970: 1)
+        )
+
+        XCTAssertEqual(
+            fileStore.protectionByURL[directoryURL],
+            FileProtectionType.completeUntilFirstUserAuthentication
+        )
+        XCTAssertEqual(
+            fileStore.protectionByURL[fileURL],
+            FileProtectionType.completeUntilFirstUserAuthentication
+        )
+        XCTAssertNotEqual(fileStore.protectionByURL[fileURL], .complete)
+        XCTAssertNotEqual(fileStore.protectionByURL[fileURL], .none)
+    }
+
+    func testDeadLetterWriteAppliesProtectionToDeadLetterFile() async throws {
+        let fileStore = MemoryFileStore()
+        let fileURL = URL(fileURLWithPath: "/protected/pending-dl2.json")
+        let deadLetterURL = URL(fileURLWithPath: "/protected/dead-dl2.json")
+        let queue = FileDetectionQueue(
+            storageIdentifier: "protected-dl",
+            fileStore: fileStore,
+            fileURL: fileURL,
+            deadLetterURL: deadLetterURL
+        )
+        let detection = QueuedDetectionFixtures.make(minor: 3)
+        _ = try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1))
+        try await queue.deadLetter(ids: [detection.id])
+
+        XCTAssertEqual(
+            fileStore.protectionByURL[deadLetterURL],
+            FileProtectionType.completeUntilFirstUserAuthentication
+        )
+        XCTAssertEqual(
+            fileStore.protectionByURL[deadLetterURL.deletingLastPathComponent()],
+            FileProtectionType.completeUntilFirstUserAuthentication
+        )
+    }
+
+    func testLoadMigratesUnprotectedExistingFiles() async throws {
+        let fileStore = MemoryFileStore()
+        let fileURL = URL(fileURLWithPath: "/migrate/pending.json")
+        let deadLetterURL = URL(fileURLWithPath: "/migrate/dead.json")
+        let detection = QueuedDetectionFixtures.make(minor: 5)
+        let encoded = try JSONEncoder().encode([detection])
+        fileStore.seed(encoded, at: fileURL)
+        XCTAssertNil(fileStore.protectionByURL[fileURL])
+
+        let queue = FileDetectionQueue(
+            storageIdentifier: "migrate",
+            fileStore: fileStore,
+            fileURL: fileURL,
+            deadLetterURL: deadLetterURL
+        )
+        let loaded = try await queue.nextBatch(limit: 10)
+        XCTAssertEqual(loaded.map(\.minor), [5])
+        XCTAssertEqual(
+            fileStore.protectionByURL[fileURL],
+            FileProtectionType.completeUntilFirstUserAuthentication
+        )
+        XCTAssertEqual(
+            fileStore.protectionByURL[fileURL.deletingLastPathComponent()],
+            FileProtectionType.completeUntilFirstUserAuthentication
+        )
+    }
+
+    func testDefaultFileStoreWritesProtectedFilesOnDisk() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SelectBeaconSDK-DataProtection-\(UUID().uuidString)", isDirectory: true)
+        let fileURL = root.appendingPathComponent("pending.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = DefaultFileStore()
+        try store.createDirectory(at: root)
+        try store.writeAtomically(Data(#"[]"#.utf8), to: fileURL)
+
+        XCTAssertTrue(try isCompleteUntilFirstUserAuthentication(at: fileURL))
+        // Directory protection is applied via createDirectory attributes + setAttributes.
+        // Some simulator volumes omit a readable protection key for directories; assert
+        // when the platform surfaces one.
+        if let directoryProtection = try fileProtectionRawValue(at: root) {
+            XCTAssertTrue(directoryProtection.contains("CompleteUntilFirstUserAuthentication"))
+        }
+        XCTAssertFalse(try isCompleteProtection(at: fileURL))
+        XCTAssertFalse(try isNoProtection(at: fileURL))
+
+        // Migration path: strip protection then re-apply.
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.none],
+            ofItemAtPath: fileURL.path
+        )
+        try store.applyDataProtection(at: fileURL)
+        XCTAssertTrue(try isCompleteUntilFirstUserAuthentication(at: fileURL))
+    }
+
+    private func isCompleteUntilFirstUserAuthentication(at url: URL) throws -> Bool {
+        let raw = try fileProtectionRawValue(at: url) ?? ""
+        return raw.contains("CompleteUntilFirstUserAuthentication")
+    }
+
+    private func isCompleteProtection(at url: URL) throws -> Bool {
+        let raw = try fileProtectionRawValue(at: url) ?? ""
+        return raw.hasSuffix("Complete") || raw.hasSuffix("FileProtectionComplete")
+    }
+
+    private func isNoProtection(at url: URL) throws -> Bool {
+        let raw = try fileProtectionRawValue(at: url) ?? ""
+        return raw.contains("None") || raw.contains("NoProtection")
+    }
+
+    /// Simulator may report `NSFileProtection*` or `NSURLFileProtection*` raw strings.
+    private func fileProtectionRawValue(at url: URL) throws -> String? {
+        let values = try url.resourceValues(forKeys: [.fileProtectionKey])
+        if let raw = values.fileProtection?.rawValue {
+            return raw
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        if let protection = attrs[.protectionKey] as? FileProtectionType {
+            return protection.rawValue
+        }
+        return attrs[.protectionKey] as? String
     }
 }
 
