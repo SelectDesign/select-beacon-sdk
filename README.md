@@ -132,7 +132,7 @@ posts to that service’s HTTP ingest endpoints on the configured environment ho
 Production is the default and requires no additional consumer configuration:
 
 ```swift
-SelectBeaconSDK.configure(appKey: key)
+SelectBeaconSDK.configure(appKey: key, appSecret: secret)
 ```
 
 The production endpoint is internally stubbed as `REPLACE_ME_PRODUCTION` until the
@@ -142,11 +142,14 @@ staging deployments can coexist:
 ```swift
 SelectBeaconSDK.configure(
     appKey: stagingKey,
+    appSecret: stagingSecret,
     environment: .staging(baseURL: stagingURL)
 )
 ```
 
-Staging already uses the live token-broker and HTTP ingest implementations.
+Staging uses the live token-broker and HTTP ingest implementations when a usable
+base URL is configured. Auth is `POST {base}/sdk/auth/v1` with `app_key` /
+`app_secret`; ingest sends `Authorization: Bearer {access_token}`.
 Replace the production placeholder before enabling production upload.
 Configuration cannot change after `start()`; stop and use a fresh process/session
 before switching environments.
@@ -177,8 +180,8 @@ When a usable environment base URL is configured, each ingest body is posted to
 `uuid` is the iBeacon proximity UUID. `device_id` is the vendor device ID (IDFV).
 `first_seen` / `last_seen` are the observation window start and latest sighting.
 `lat`/`lng` may be `null` when no location fix was available. Auth uses the same
-host at `/ingest/auth/v1` with snake_case `app_key`, and ingest sends
-`Authorization: Bearer {token}` when auth is enabled. HTTP 200 clears the entire
+host at `/sdk/auth/v1` with snake_case `app_key` and `app_secret`, and ingest sends
+`Authorization: Bearer {token}` from the broker response. HTTP 200 clears the entire
 uploaded batch from the durable queue.
 
 ## Host-owned permissions

@@ -3,6 +3,13 @@ import XCTest
 
 @MainActor
 final class SelectBeaconSDKConfigurationTests: XCTestCase {
+    func testAppIdentityRequiresNonEmptyKeyAndSecret() {
+        XCTAssertNil(AppIdentity(appKey: "", appSecret: "secret"))
+        XCTAssertNil(AppIdentity(appKey: "key", appSecret: ""))
+        XCTAssertNil(AppIdentity(appKey: "  ", appSecret: "secret"))
+        XCTAssertNotNil(AppIdentity(appKey: "key", appSecret: "secret"))
+    }
+
     func testProductionEnvironmentIsDefault() {
         let fixture = SDKTestFixture.makeSDK()
 
@@ -56,7 +63,7 @@ final class SelectBeaconSDKConfigurationTests: XCTestCase {
         XCTAssertEqual(fixture.sdk.operationalStatus, .ranging)
 
         let stagingURL = SDKTestFixture.testURL("https://staging.example.com")
-        guard let stagingIdentity = AppIdentity(appKey: "staging-key") else {
+        guard let stagingIdentity = AppIdentity(appKey: "staging-key", appSecret: "test-secret") else {
             return XCTFail("Test app identity should be valid")
         }
 
@@ -72,7 +79,7 @@ final class SelectBeaconSDKConfigurationTests: XCTestCase {
 
     func testInvalidReplacementConfigurationClearsPriorEnablement() {
         let fixture = SDKTestFixture.makeSDK()
-        guard let replacement = AppIdentity(appKey: "replacement-key") else {
+        guard let replacement = AppIdentity(appKey: "replacement-key", appSecret: "test-secret") else {
             return XCTFail("Test app identity should be valid")
         }
 
@@ -104,11 +111,11 @@ final class SelectBeaconSDKConfigurationTests: XCTestCase {
                 storageIdentifiers.append(storageIdentifier)
                 return InMemoryQueue()
             },
-            identity: AppIdentity(appKey: "first-key")
+            identity: AppIdentity(appKey: "first-key", appSecret: "test-secret")
         )
 
         _ = try await sdk.selectPendingReports()
-        guard let secondKey = AppIdentity(appKey: "second-key") else {
+        guard let secondKey = AppIdentity(appKey: "second-key", appSecret: "test-secret") else {
             return XCTFail("Test app identity should be valid")
         }
         sdk.configure(

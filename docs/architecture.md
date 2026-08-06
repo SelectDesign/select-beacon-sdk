@@ -347,13 +347,14 @@ shows pending items as queued (no separate “retrying” status yet). AppSuppor
 `onPendingReportsChanged` and `onDeadLetteredReportsChanged` both refresh after
 acknowledgement and after dead-letter.
 
-`AuthProvider.validToken()` is called per batch (plus one refresh on ingest
+`AuthProvider.validAuthorization()` is called per batch (plus one refresh on ingest
 401/403). Successful acknowledgement and dead-letter notify the pending and
 dead-letter SPI snapshots with complete replacement lists.
 
 `UploadInterfaces.swift` defines the upload seams:
 
-- `AuthProvider` supplies a currently valid bearer token and can
+- `UploadAuthorization` carries `accessToken`, `tokenType`, and `headerValue`.
+- `AuthProvider` supplies currently valid authorization and can
   `invalidateCachedToken()`.
 - `UploadTransport` uploads a batch with that authorization.
 - `UploadResponse` models a successful acknowledgement.
@@ -375,21 +376,19 @@ and retried with backoff.
 
 Auth and ingest share the configured environment host:
 
-- Token broker: `POST {base}/ingest/auth/v1` with snake_case `app_key`;
-  response `access_token` / `expires_in` (**currently paused** —
-  `UploadAuthentication.isEnabled` is `false`; ingest posts without Bearer auth
-  until the broker is ready)
+- Token broker: `POST {base}/sdk/auth/v1` with snake_case `app_key` and
+  `app_secret`; response `access_token` / `token_type` / `expires_in`
 - Ingest: `POST {base}/ingest/sdk/v1/detections` with
-  `Authorization: Bearer {token}` when auth is enabled, and
+  `Authorization: {token_type} {access_token}`, and
   `Content-Type` / `Accept`: `application/json`
 
 `TokenBrokerAuthProvider.swift` provides the SDK-owned authentication
-implementation. It posts the configured app key to Select's token endpoint on
-the same host as ingest, retains the returned access token and expiry in memory
-only, and reuses that token until it is within its refresh safety margin.
-Concurrent refreshes share one in-flight request. The SDK never holds or
-transmits an Auth0 client secret, and the durable detection queue never stores
-access tokens.
+implementation. It posts the configured app key and app secret to Select's
+token endpoint on the same host as ingest, retains the returned access token,
+token type, and expiry in memory only, and reuses that authorization until it
+is within its refresh safety margin. Concurrent refreshes share one in-flight
+request. The SDK never holds or transmits an Auth0 client secret, and the
+durable detection queue never stores access tokens or the app secret.
 
 `HTTPIngestUploadTransport` performs the live ingest POST when the environment
 base URL is a usable http(s) URL. Production remains deferred while
@@ -484,7 +483,6 @@ physical iPhone/iPad validation checklist.
 | `Networking/HTTPIngestUploadTransport.swift`             | Live ingest POST with Bearer auth                            |
 | `Networking/HTTPIngestStatusClassifier.swift`            | HTTP status → retry / dead-letter / refresh classification   |
 | `Networking/UploadFailurePolicy.swift`                   | Maps transport/auth errors to flush outcomes                 |
-| `Networking/UploadAuthentication.swift`                  | Temporary auth pause kill-switch + `PausedAuthProvider`      |
 | `Networking/RetryAfterHeader.swift`                      | Parse `Retry-After` for 429 backoff                          |
 | `Networking/NetworkPathObserver.swift`                   | Restart-safe connectivity observer                           |
 | `Networking/UploadCoordinator.swift`                     | Quiet debounce, max-age, full drain, bounded wake flush      |
@@ -507,8 +505,8 @@ physical iPhone/iPad validation checklist.
 - Do not add third-party dependencies to the core package.
 - Do not read real time inside testable business logic.
 - Do not add an endpoint, payload, or Auth0 client secret to the SDK. Auth uses
-  Select's token broker with the configured app key only (`/ingest/auth/v1` on
-  the environment host).
+  Select's token broker with the configured app key and app secret
+  (`/sdk/auth/v1` on the environment host). Never log credentials or tokens.
 - Do not invent alternate ingest paths; use `/ingest/sdk/v1/detections` with a
   top-level `detections` array of flat snake_case detection objects (no
   JSON:API `type`/`attributes` wrapper).

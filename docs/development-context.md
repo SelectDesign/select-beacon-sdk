@@ -10,7 +10,9 @@ crowdsource locations of Select retail assets.
 - Ship one Select UUID: `76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911`.
 - Identify beacons by UUID, Major, and Minor. The backend—not the SDK—resolves serials.
 - Observe host-owned location authorization; never request permission.
-- Require `SelectBeaconSDK.configure(appKey:)` before `start()`.
+- Require `SelectBeaconSDK.configure(appKey:appSecret:)` before `start()`.
+  Configure stores credentials in memory only; it never starts ranging, reads
+  disk, or uses the network.
 - Production API configuration defaults internally to `REPLACE_ME_PRODUCTION`. Staging
   uses an explicit caller-supplied endpoint so multiple staging environments are supported.
 - Target iOS 17+, keep `SelectBeaconSDK` main-actor isolated, and add no third-party dependencies.
@@ -32,9 +34,10 @@ crowdsource locations of Select retail assets.
   upload; never block capture on the network). Background region-wake flushes
   are bounded to one batch; full drains use quiet debounce, max-age, lifecycle,
   connectivity, and cold-start triggers. A cancelled delivery session must
-  not emit delayed adapter updates. Upload auth is `{base}/ingest/auth/v1`;
-  ingest is `{base}/ingest/sdk/v1/detections` once a usable environment host is
-  configured.
+  not emit delayed adapter updates. Upload auth is `{base}/sdk/auth/v1`
+  (`app_key` + `app_secret` → short-lived token); ingest is
+  `{base}/ingest/sdk/v1/detections` with `Authorization` once a usable
+  environment host is configured.
 
 ## Safety requirements
 

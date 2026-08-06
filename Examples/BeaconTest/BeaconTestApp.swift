@@ -52,12 +52,17 @@ private final class BeaconTestModel: ObservableObject {
         openWindows = support.currentOpenWindows
         isStopFinalizePending = support.isStopFinalizePending
 
-        SelectBeaconSDK.configure(appKey: "HARNESS_APP_KEY")
+        SelectBeaconSDK.configure(
+            appKey: "HARNESS_APP_KEY",
+            appSecret: "HARNESS_APP_SECRET",
+            environment: .staging(baseURL: URL(string: "https://staging.select.example.com")!)
+        )
         SelectBeaconSDK.shared.onOperationalStatusChanged = { [weak self] status in
             self?.operationalStatus = status
         }
         operationalStatus = SelectBeaconSDK.shared.operationalStatus
-        // Demo-only: acknowledge flushed batches so the queued list can drain.
+        // Demo-only: acknowledge flushed batches without calling the live broker/ingest.
+        // For real staging auth E2E, remove this and use provisioned appKey/appSecret.
         SelectBeaconSDK.shared.selectInstallDebugAutoAckUploadSeams()
         start()
 

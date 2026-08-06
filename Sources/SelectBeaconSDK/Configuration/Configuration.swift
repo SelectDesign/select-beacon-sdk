@@ -102,13 +102,16 @@ struct SDKConfiguration {
 
 struct AppIdentity: Equatable {
     let appKey: String
+    let appSecret: String
 
-    init?(appKey: String) {
+    init?(appKey: String, appSecret: String) {
         let trimmedKey = appKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKey.isEmpty else {
+        let trimmedSecret = appSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty, !trimmedSecret.isEmpty else {
             return nil
         }
         self.appKey = trimmedKey
+        self.appSecret = trimmedSecret
     }
 }
 
@@ -117,7 +120,7 @@ struct APIEndpoint: Equatable {
 
     /// `POST` target for short-lived upload tokens.
     var authURL: URL? {
-        url(path: "/ingest/auth/v1")
+        url(path: "/sdk/auth/v1")
     }
 
     /// `POST` target for beacon ingest.
@@ -153,24 +156,32 @@ struct APIEndpoint: Equatable {
 
 /// Configuration supplied internally to the SDK's token-broker auth provider.
 ///
-/// The provider sends `app_key` to this endpoint. No Auth0 client secret is held
-/// or transmitted by the SDK.
+/// The provider posts `app_key` and `app_secret` to this endpoint. The secret
+/// is held in memory only for broker exchange — never logged or written to the
+/// durable queue. No Auth0 client secret is used.
 struct TokenBrokerConfiguration: Equatable {
     let appKey: String
+    let appSecret: String
     let tokenEndpoint: URL
 
-    init?(appKey: String, tokenEndpoint: URL) {
+    init?(appKey: String, appSecret: String, tokenEndpoint: URL) {
         let trimmedAppKey = appKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedAppKey.isEmpty else {
+        let trimmedAppSecret = appSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAppKey.isEmpty, !trimmedAppSecret.isEmpty else {
             return nil
         }
 
         self.appKey = trimmedAppKey
+        self.appSecret = trimmedAppSecret
         self.tokenEndpoint = tokenEndpoint
     }
 
     init?(identity: AppIdentity, tokenEndpoint: URL) {
-        self.init(appKey: identity.appKey, tokenEndpoint: tokenEndpoint)
+        self.init(
+            appKey: identity.appKey,
+            appSecret: identity.appSecret,
+            tokenEndpoint: tokenEndpoint
+        )
     }
 }
 
@@ -217,7 +228,8 @@ struct SDKEnablementConfiguration: Equatable {
         self.endpoint = endpoint
     }
 
-    /// Keeps durable records isolated without writing the app key into the file path.
+    /// Keeps durable records isolated without writing the app key or secret
+    /// into the file path.
     var queueStorageIdentifier: String {
         let namespace = "\(identity.appKey)|\(endpoint.baseURL)"
         return SHA256.hash(data: Data(namespace.utf8))

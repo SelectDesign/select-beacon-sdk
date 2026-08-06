@@ -219,7 +219,7 @@ final class FileDetectionQueueTests: XCTestCase {
     }
 
     func testQueueStorageIdentifiersSeparateCustomersAndEndpoints() async throws {
-        guard let identity = AppIdentity(appKey: "customer"),
+        guard let identity = AppIdentity(appKey: "customer", appSecret: "test-secret"),
               let production = SDKEnablementConfiguration(
                   identity: identity,
                   environment: .production

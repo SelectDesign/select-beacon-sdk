@@ -15,16 +15,18 @@
 
 ## Public API and enablement
 
-- Standard consumers receive `SelectBeaconSDK.configure(appKey:)`,
+- Standard consumers receive `SelectBeaconSDK.configure(appKey:appSecret:)`,
   `shared.start()`, `shared.stop()`, and non-sensitive `operationalStatus`.
+  Both credentials are required; `environment` defaults to production.
 - `SelectBeaconAppSupport` is a separate Select-owned product exposing active,
   open-window, pending-report, and dead-lettered-report snapshots through a
   core SPI bridge. The SPI is an organizational boundary, not security
   enforcement. Active beacons are ordered by UUID → major → minor. Dead letters
   use the same report model as pending but stay in a separate list and are not
   re-uploaded; `clearPendingReports()` does not clear them.
-- The host supplies an app key before detection can start. Configuration stores
-  it only; configure never starts ranging, reads disk, or uses the network.
+- The host supplies an app key and app secret before detection can start.
+  Configuration stores them in memory only; configure never starts ranging,
+  reads disk, or uses the network.
 - Production is the default (`REPLACE_ME_PRODUCTION` until its host is
   confirmed). Staging requires a caller-supplied URL. Environment cannot change
   after `start()`.
@@ -74,10 +76,11 @@
   for battery-friendly batching, offline retention, background resilience, and
   at-least-once eventual delivery in a crowdsourced / delay-tolerant setting
   (see `architecture.md` §5b).
-- **Auth is temporarily paused** (`UploadAuthentication.isEnabled == false`):
-  ingest POSTs without calling the token broker and without an `Authorization`
-  header. Re-enable by setting that flag to `true` when the broker is ready;
-  `TokenBrokerAuthProvider` and the 401 refresh path remain in place.
+- Live usable hosts always authenticate: `TokenBrokerAuthProvider` posts
+  `app_key` / `app_secret` to `/sdk/auth/v1`, caches `access_token` +
+  `token_type` + expiry in memory, and ingest attaches `Authorization`.
+  There is no auth-pause kill-switch. Unusable production placeholder keeps
+  deferred upload seams (no network).
 - Forward triggers: foreground sighting quiet (60s), maximum queue age (300s),
   app background/foreground, connectivity return, cold-start backlog flush, or
   post-enqueue opportunistic flush when online. **Background wake / background
@@ -89,14 +92,15 @@
   limits. 401/403 invalidates the token, refreshes once, and retries immediately.
   Other 4xx dead-letter the batch; retryable failures dead-letter after
   `maxUploadAttempts`. Pending queue size/age caps apply with eviction diagnostics.
-- Auth is `POST {base}/ingest/auth/v1` with `app_key`; responses use
-  `access_token` and `expires_in`.
+- Auth is `POST {base}/sdk/auth/v1` with `app_key` and `app_secret`; responses use
+  `access_token`, `token_type`, and `expires_in`.
 - Ingest is `POST {base}/ingest/sdk/v1/detections` with body
   `{ "detections": [ { "uuid": …, "best_rssi_dbm": …, … } ] }`,
-  snake_case fields (including stable `idempotency_key`), and Bearer
-  authorization. HTTP 200 acknowledges the posted batch. Backend must dedupe on
-  `idempotency_key` for at-least-once re-sends.
-- The SDK obtains short-lived tokens using `appKey` only. It never holds or
-  transmits an app secret or Auth0 client secret.
+  snake_case fields (including stable `idempotency_key`), and
+  `Authorization: {token_type} {access_token}`. HTTP 200 acknowledges the posted
+  batch. Backend must dedupe on `idempotency_key` for at-least-once re-sends.
+- The SDK obtains short-lived tokens using `appKey` and `appSecret` only. It
+  never holds or transmits an Auth0 client secret. The app secret is never
+  logged or written to the durable queue.
 - The production host remains `REPLACE_ME_PRODUCTION` until replaced; explicit
   usable staging URLs use the live auth and HTTP implementations.

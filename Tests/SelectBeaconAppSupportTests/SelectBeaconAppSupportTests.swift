@@ -241,7 +241,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             queue: { _ in queue },
             networkPathObserver: { FakeNetworkPathObserver() },
             absenceExpiryScheduler: absenceScheduler,
-            identity: AppIdentity(appKey: "select-app")
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
         )
         let adapter = SelectBeaconAppSupport(sdk: sdk)
         let openWindowsUpdate = expectation(description: "Open windows update")
@@ -299,7 +299,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             queue: { _ in queue },
             networkPathObserver: { FakeNetworkPathObserver() },
             absenceExpiryScheduler: absenceScheduler,
-            identity: AppIdentity(appKey: "select-app")
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
         )
         sdk.selectInstallDebugAutoAckUploadSeams()
         let adapter = SelectBeaconAppSupport(sdk: sdk)
@@ -347,7 +347,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             clock: MutableClock(now: Date(timeIntervalSince1970: 1_000_000)),
             queue: { _ in queue },
             networkPathObserver: { FakeNetworkPathObserver() },
-            identity: AppIdentity(appKey: "select-app")
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
         )
         let adapter = SelectBeaconAppSupport(sdk: sdk)
         XCTAssertFalse(adapter.isStopFinalizePending)
@@ -405,7 +405,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             queue: { _ in queue },
             networkPathObserver: { FakeNetworkPathObserver() },
             absenceExpiryScheduler: absenceScheduler,
-            identity: AppIdentity(appKey: "select-app")
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
         )
         let adapter = SelectBeaconAppSupport(sdk: sdk)
         let emptied = expectation(description: "Adapter pending emptied")
@@ -444,7 +444,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             clock: MutableClock(now: Date(timeIntervalSince1970: 1_000_000)),
             queue: { _ in InMemoryQueue() },
             networkPathObserver: { FakeNetworkPathObserver() },
-            identity: AppIdentity(appKey: "select-app")
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
         )
         let adapter = SelectBeaconAppSupport(sdk: sdk)
         sdk.start()
@@ -467,7 +467,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             clock: MutableClock(now: Date(timeIntervalSince1970: 1_000_000)),
             queue: { _ in queue },
             networkPathObserver: { FakeNetworkPathObserver() },
-            identity: AppIdentity(appKey: "select-app")
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
         )
         let adapter = SelectBeaconAppSupport(sdk: sdk)
 
@@ -498,10 +498,10 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         final class PoisonTransport: UploadTransport {
             func upload(
                 detections: [QueuedDetection],
-                bearerToken: String
+                authorization: UploadAuthorization
             ) async throws -> UploadResponse {
                 _ = detections
-                _ = bearerToken
+                _ = authorization
                 throw HTTPIngestUploadError.clientError(statusCode: 400)
             }
         }
@@ -524,7 +524,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             networkPathObserver: { FakeNetworkPathObserver() },
             deviceIdentifier: { FixedDeviceIdentifier() },
             absenceExpiryScheduler: absenceScheduler,
-            identity: AppIdentity(appKey: "select-app")
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
         )
         sdk.selectInstallUploadSeams(
             auth: DebugAutoAckAuthProvider(),
@@ -585,7 +585,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             clock: clock,
             queue: { _ in queue },
             networkPathObserver: { FakeNetworkPathObserver() },
-            identity: AppIdentity(appKey: "select-app")
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
         )
         let adapter = SelectBeaconAppSupport(sdk: sdk)
 
@@ -623,7 +623,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             clock: MutableClock(now: Date(timeIntervalSince1970: 1_000_000)),
             queue: { _ in InMemoryQueue() },
             networkPathObserver: { FakeNetworkPathObserver() },
-            identity: AppIdentity(appKey: "select-app")
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
         )
         let adapter = SelectBeaconAppSupport(sdk: sdk)
         let ordered = expectation(description: "Active beacons identity-ordered")

@@ -52,20 +52,16 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
 
         let response = try await transport.upload(
             detections: detections,
-            bearerToken: "token-abc"
+            authorization: UploadAuthorization(accessToken: "token-abc")
         )
 
         XCTAssertEqual(response, .accepted(acknowledgedIDs: detections.map(\.id)))
         let request = try XCTUnwrap(client.requests.first)
         XCTAssertEqual(request.httpMethod, "POST")
-        if UploadAuthentication.isEnabled {
-            XCTAssertEqual(
-                request.value(forHTTPHeaderField: "Authorization"),
-                "Bearer token-abc"
-            )
-        } else {
-            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
-        }
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "Authorization"),
+            "Bearer token-abc"
+        )
         XCTAssertEqual(
             request.value(forHTTPHeaderField: "Content-Type"),
             HTTPIngestUploadTransport.jsonContentType
@@ -96,7 +92,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         do {
             _ = try await transport.upload(
                 detections: [makeDetection(minor: 1)],
-                bearerToken: "token"
+                authorization: UploadAuthorization(accessToken: "token")
             )
             XCTFail("Expected failure")
         } catch let error as HTTPIngestUploadError {
@@ -119,7 +115,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         do {
             _ = try await transport.upload(
                 detections: [makeDetection(minor: 1)],
-                bearerToken: "token"
+                authorization: UploadAuthorization(accessToken: "token")
             )
             XCTFail("Expected rate limit failure")
         } catch let error as HTTPIngestUploadError {
@@ -141,7 +137,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         do {
             _ = try await transport.upload(
                 detections: [makeDetection(minor: 1)],
-                bearerToken: "token"
+                authorization: UploadAuthorization(accessToken: "token")
             )
             XCTFail("Expected rate limit failure")
         } catch let error as HTTPIngestUploadError {
@@ -163,7 +159,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         do {
             _ = try await transport.upload(
                 detections: [makeDetection(minor: 1)],
-                bearerToken: "token"
+                authorization: UploadAuthorization(accessToken: "token")
             )
             XCTFail("Expected client error")
         } catch let error as HTTPIngestUploadError {
@@ -184,7 +180,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         do {
             _ = try await transport.upload(
                 detections: [makeDetection(minor: 1)],
-                bearerToken: "token"
+                authorization: UploadAuthorization(accessToken: "token")
             )
             XCTFail("Expected failure")
         } catch let error as HTTPIngestUploadError {

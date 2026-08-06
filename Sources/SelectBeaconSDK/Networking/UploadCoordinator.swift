@@ -285,21 +285,19 @@ final class UploadCoordinator {
         }
     }
 
-    /// Obtains a token and uploads. While auth is paused, live installs use
-    /// `PausedAuthProvider` and the transport omits Bearer; the 401 refresh
-    /// path runs only when `UploadAuthentication.isEnabled` is true.
+    /// Obtains authorization and uploads. On 401/403, invalidates the cached
+    /// token, refreshes once, and retries the same batch immediately.
     private func performUpload(batch: [QueuedDetection]) async throws -> UploadResponse {
-        let token = try await authProvider.validToken()
+        let authorization = try await authProvider.validAuthorization()
         do {
-            return try await transport.upload(detections: batch, bearerToken: token)
+            return try await transport.upload(detections: batch, authorization: authorization)
         } catch {
-            guard UploadAuthentication.isEnabled,
-                  case .unauthorizedRefresh = UploadFailurePolicy.policy(for: error) else {
+            guard case .unauthorizedRefresh = UploadFailurePolicy.policy(for: error) else {
                 throw error
             }
             authProvider.invalidateCachedToken()
-            let refreshed = try await authProvider.validToken()
-            return try await transport.upload(detections: batch, bearerToken: refreshed)
+            let refreshed = try await authProvider.validAuthorization()
+            return try await transport.upload(detections: batch, authorization: refreshed)
         }
     }
 

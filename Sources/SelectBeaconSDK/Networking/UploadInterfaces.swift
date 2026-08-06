@@ -1,10 +1,27 @@
 import Foundation
 
-/// Supplies a currently valid, short-lived bearer token to the upload pipeline.
+/// Short-lived credentials used for authenticated ingest requests.
+struct UploadAuthorization: Equatable, Sendable {
+    let accessToken: String
+    let tokenType: String
+
+    /// Value for the HTTP `Authorization` header.
+    var headerValue: String {
+        "\(tokenType) \(accessToken)"
+    }
+
+    init(accessToken: String, tokenType: String = "Bearer") {
+        self.accessToken = accessToken
+        let trimmedType = tokenType.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.tokenType = trimmedType.isEmpty ? "Bearer" : trimmedType
+    }
+}
+
+/// Supplies currently valid upload authorization to the upload pipeline.
 @MainActor
 protocol AuthProvider {
-    func validToken() async throws -> String
-    /// Clears any cached token so the next `validToken()` fetches a new one.
+    func validAuthorization() async throws -> UploadAuthorization
+    /// Clears any cached token so the next `validAuthorization()` fetches a new one.
     func invalidateCachedToken()
 }
 
@@ -20,7 +37,7 @@ enum UploadResponse: Equatable, Sendable {
 protocol UploadTransport {
     func upload(
         detections: [QueuedDetection],
-        bearerToken: String
+        authorization: UploadAuthorization
     ) async throws -> UploadResponse
 }
 
@@ -30,10 +47,10 @@ struct DeferredUploadTransport: UploadTransport {
 
     func upload(
         detections: [QueuedDetection],
-        bearerToken: String
+        authorization: UploadAuthorization
     ) async throws -> UploadResponse {
         _ = detections
-        _ = bearerToken
+        _ = authorization
         throw NotConfigured()
     }
 }
@@ -42,15 +59,15 @@ struct DeferredUploadTransport: UploadTransport {
 struct DeferredAuthProvider: AuthProvider {
     struct NotConfigured: Error {}
 
-    func validToken() async throws -> String {
+    func validAuthorization() async throws -> UploadAuthorization {
         throw NotConfigured()
     }
 }
 
 /// Harness auth that always returns a placeholder bearer token.
 struct DebugAutoAckAuthProvider: AuthProvider {
-    func validToken() async throws -> String {
-        "debug-auto-ack-token"
+    func validAuthorization() async throws -> UploadAuthorization {
+        UploadAuthorization(accessToken: "debug-auto-ack-token")
     }
 }
 
@@ -58,9 +75,9 @@ struct DebugAutoAckAuthProvider: AuthProvider {
 struct DebugAutoAckUploadTransport: UploadTransport {
     func upload(
         detections: [QueuedDetection],
-        bearerToken: String
+        authorization: UploadAuthorization
     ) async throws -> UploadResponse {
-        _ = bearerToken
+        _ = authorization
         return .accepted(acknowledgedIDs: detections.map(\.id))
     }
 }

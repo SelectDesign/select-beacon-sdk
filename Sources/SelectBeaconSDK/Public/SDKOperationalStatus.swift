@@ -1,6 +1,6 @@
 /// The non-sensitive operating state of the SDK.
 public enum SDKOperationalStatus: Equatable, Sendable {
-    /// `configure(appKey:)` has not completed successfully.
+    /// `configure(appKey:appSecret:)` has not completed successfully.
     case unconfigured
 
     /// The SDK is configured but detection has not been requested.

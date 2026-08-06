@@ -40,7 +40,7 @@ final class HTTPIngestUploadTransport: UploadTransport {
 
     func upload(
         detections: [QueuedDetection],
-        bearerToken: String
+        authorization: UploadAuthorization
     ) async throws -> UploadResponse {
         guard let scheme = ingestURL.scheme?.lowercased(),
               ["http", "https"].contains(scheme),
@@ -61,9 +61,7 @@ final class HTTPIngestUploadTransport: UploadTransport {
         request.httpMethod = "POST"
         request.setValue(Self.jsonContentType, forHTTPHeaderField: "Content-Type")
         request.setValue(Self.jsonContentType, forHTTPHeaderField: "Accept")
-        if UploadAuthentication.isEnabled, !bearerToken.isEmpty {
-            request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
-        }
+        request.setValue(authorization.headerValue, forHTTPHeaderField: "Authorization")
         request.httpBody = body
 
         let response: URLResponse

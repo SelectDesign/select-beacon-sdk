@@ -6,7 +6,7 @@ final class APIEndpointURLTests: XCTestCase {
         let endpoint = APIEndpoint(baseURL: "https://api.select.example.com")
         XCTAssertEqual(
             endpoint.authURL?.absoluteString,
-            "https://api.select.example.com/ingest/auth/v1"
+            "https://api.select.example.com/sdk/auth/v1"
         )
         XCTAssertEqual(
             endpoint.ingestURL?.absoluteString,
@@ -31,7 +31,7 @@ final class APIEndpointURLTests: XCTestCase {
     }
 
     func testEnablementTokenBrokerUsesAuthPath() {
-        let identity = AppIdentity(appKey: "select-app-key")!
+        let identity = AppIdentity(appKey: "select-app-key", appSecret: "test-secret")!
         let configuration = SDKEnablementConfiguration(
             identity: identity,
             environment: .staging(baseURL: URL(string: "https://staging.select.example.com")!)
@@ -39,7 +39,9 @@ final class APIEndpointURLTests: XCTestCase {
         let tokenConfig = configuration.tokenBrokerConfiguration()
         XCTAssertEqual(
             tokenConfig?.tokenEndpoint.absoluteString,
-            "https://staging.select.example.com/ingest/auth/v1"
+            "https://staging.select.example.com/sdk/auth/v1"
         )
+        XCTAssertEqual(tokenConfig?.appKey, "select-app-key")
+        XCTAssertEqual(tokenConfig?.appSecret, "test-secret")
     }
 }

@@ -9,20 +9,20 @@ limitation.
 
 - [ ] Confirm and set the real production ingest host; replace
       `REPLACE_ME_PRODUCTION` in `APIEndpointDefaults` / configuration.
-- [ ] Provision VIP (BizStride) and Select app keys against the token broker
-      (`POST {base}/ingest/auth/v1`).
-- [ ] End-to-end staging upload: configure `.staging(baseURL:)`, detect a real
-      beacon, confirm flat JSON body lands in beacon-ingestor, HTTP 200 clears
-      the durable queue.
+- [ ] Provision VIP (BizStride) and Select app keys/secrets against the token
+      broker (`POST {base}/sdk/auth/v1`).
+- [ ] End-to-end staging upload: configure `.staging(baseURL:)` with
+      `appKey`/`appSecret`, detect a real beacon, confirm flat JSON body lands
+      in beacon-ingestor with Authorization, HTTP 200 clears the durable queue.
 - [ ] End-to-end production upload after the host URL is set (same path,
-      production key + host).
+      production key + secret + host).
 - [ ] Confirm with VIP/backend that wire attributes match ingest
       (`uuid`, `major`, `minor`, `best_rssi_dbm`, `observations`, `lat`/`lng`,
       `first_seen`, `last_seen`, `device_id`, `idempotency_key`; snake_case)
       and that whole-batch ack on HTTP 200 is final. Backend must dedupe on
       `idempotency_key` (at-least-once delivery).
-- [ ] Re-enable ingest auth: set `UploadAuthentication.isEnabled = true` once
-      the token broker is ready (Bearer header + 401 refresh path).
+- [x] Live ingest auth: `configure(appKey:appSecret:)` → `/sdk/auth/v1` →
+      `Authorization` on detections (auth pause removed).
 - [ ] VIP confirmation for background `URLSession` (Tier B) if system-completed
       uploads while suspended are required beyond opportunistic wake flushes.
 
@@ -55,7 +55,7 @@ limitation.
 - [ ] VIP BizStride integration notes (one page):
   - depend on product `SelectBeaconSDK` only
   - host Info.plist location strings + optional Always / background mode
-  - `configure(appKey:)` then `start()` / `stop()`
+  - `configure(appKey:appSecret:)` then `start()` / `stop()`
   - subscribe to `operationalStatus` only (no beacon identities)
   - never import `@_spi(SelectApp)` or `SelectBeaconAppSupport` in VIP
 - [ ] Select internal app notes: additionally depend on
@@ -89,12 +89,23 @@ limitation.
       VIP/Select inject staging keys locally.
 - [ ] Align BeaconTest with `CONSUMER_UI_PROMPT.md` (Clear Queue; SPI policy;
       optional no auto-start).
+- [ ] **Confirm upload forward policy** (revisit later): today docs call the 60s
+      quiet debounce “primary,” but post-enqueue opportunistic flush usually
+      drains Queued immediately when online (harness debug auto-ack makes this
+      look like a blip). Decide and document one approach —
+      **latency-first** (keep immediate flush; demote debounce in docs) vs
+      **batch-first** (defer FG flush to quiet debounce + max age + lifecycle) —
+      then align `UploadCoordinator`, `docs/architecture.md` §5b, and the
+      consumer prompt. Related follow-ups only after that decision: Tier B
+      background `URLSession`, AppSupport uploading/retry visibility, harness
+      auto-ack honesty.
 
 ## Done recently (do not re-open unless product asks)
 
 - Observation-window aggregates and durable enqueue-on-close
 - Flat JSON ingest fields (`first_seen`, `last_seen`, `best_rssi_dbm`, …; snake_case)
-- Staging live auth (`/ingest/auth/v1`) + HTTP ingest (`/ingest/sdk/v1/detections`)
+- Staging live auth (`/sdk/auth/v1` with app key + secret) + HTTP ingest
+  (`/ingest/sdk/v1/detections` with Authorization)
 - Upload coordinator (quiet debounce, max queue age, opportunistic full drain,
   bounded single-batch background wake flush, backoff)
 - iBeacon region monitoring + ranging-on-wake (Always); When-In-Use remains

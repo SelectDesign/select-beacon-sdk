@@ -32,24 +32,28 @@ enum TokenBrokerAuthError: Error, Equatable {
 @MainActor
 final class TokenBrokerAuthProvider: AuthProvider {
     private struct CachedToken {
-        let value: String
+        let authorization: UploadAuthorization
         let expiresAt: Date
     }
 
     private struct TokenRequest: Encodable {
         let appKey: String
+        let appSecret: String
 
         enum CodingKeys: String, CodingKey {
             case appKey = "app_key"
+            case appSecret = "app_secret"
         }
     }
 
     private struct TokenResponse: Decodable {
         let accessToken: String
+        let tokenType: String?
         let expiresIn: TimeInterval
 
         enum CodingKeys: String, CodingKey {
             case accessToken = "access_token"
+            case tokenType = "token_type"
             case expiresIn = "expires_in"
         }
     }
@@ -60,7 +64,7 @@ final class TokenBrokerAuthProvider: AuthProvider {
     private let refreshSafetyMargin: TimeInterval
 
     private var cachedToken: CachedToken?
-    private var refreshTask: Task<String, Error>?
+    private var refreshTask: Task<UploadAuthorization, Error>?
 
     init(
         configuration: TokenBrokerConfiguration,
@@ -74,9 +78,9 @@ final class TokenBrokerAuthProvider: AuthProvider {
         self.refreshSafetyMargin = max(0, refreshSafetyMargin)
     }
 
-    func validToken() async throws -> String {
+    func validAuthorization() async throws -> UploadAuthorization {
         if let cachedToken, isUsable(cachedToken) {
-            return cachedToken.value
+            return cachedToken.authorization
         }
 
         if let refreshTask {
@@ -92,9 +96,9 @@ final class TokenBrokerAuthProvider: AuthProvider {
         self.refreshTask = refreshTask
 
         do {
-            let token = try await refreshTask.value
+            let authorization = try await refreshTask.value
             self.refreshTask = nil
-            return token
+            return authorization
         } catch {
             self.refreshTask = nil
             throw error
@@ -111,7 +115,7 @@ final class TokenBrokerAuthProvider: AuthProvider {
         token.expiresAt.timeIntervalSince(clock.now) > refreshSafetyMargin
     }
 
-    private func requestToken() async throws -> String {
+    private func requestToken() async throws -> UploadAuthorization {
         guard let scheme = configuration.tokenEndpoint.scheme?.lowercased(),
               ["http", "https"].contains(scheme),
               configuration.tokenEndpoint.host != nil else {
@@ -124,7 +128,12 @@ final class TokenBrokerAuthProvider: AuthProvider {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         do {
-            request.httpBody = try JSONEncoder().encode(TokenRequest(appKey: configuration.appKey))
+            request.httpBody = try JSONEncoder().encode(
+                TokenRequest(
+                    appKey: configuration.appKey,
+                    appSecret: configuration.appSecret
+                )
+            )
         } catch {
             throw TokenBrokerAuthError.invalidResponse
         }
@@ -156,10 +165,14 @@ final class TokenBrokerAuthProvider: AuthProvider {
             throw TokenBrokerAuthError.invalidResponse
         }
 
+        let authorization = UploadAuthorization(
+            accessToken: token,
+            tokenType: decodedResponse.tokenType ?? "Bearer"
+        )
         cachedToken = CachedToken(
-            value: token,
+            authorization: authorization,
             expiresAt: clock.now.addingTimeInterval(decodedResponse.expiresIn)
         )
-        return token
+        return authorization
     }
 }

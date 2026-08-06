@@ -13,7 +13,8 @@ Read `docs/development-context.md` and `docs/decisions.md` before changing behav
 - Single fleet UUID `76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911`
 - Identify beacons by UUID / major / minor only (no serial resolution in SDK)
 - Observe host location authorization; never request permission
-- `configure(appKey:)` before `start()`; configure does no ranging, disk, or network
+- `configure(appKey:appSecret:)` before `start()`; configure does no ranging, disk, or network
+- Hold `appSecret` in memory for the token broker only; never log tokens, secrets, or full payloads
 - iOS 17+, Swift 6, `@MainActor` facade; zero third-party dependencies
 - Standard public API: configure, start/stop, non-sensitive `operationalStatus` only
 - Beacon / queue data via `SelectBeaconAppSupport` + `@_spi(SelectApp)` — not standard consumers
@@ -28,3 +29,5 @@ Read `docs/development-context.md` and `docs/decisions.md` before changing behav
 - Log tokens, full payloads, or secrets
 - Force-unwrap runtime paths; degrade quietly when auth/location unavailable
 - Put IDFV / deviceId into AppSupport UI models
+- Persist `appSecret` to the durable queue or include it in queue file names
+- Hold or transmit an Auth0 client secret (Select broker credentials only)

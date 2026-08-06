@@ -8,7 +8,7 @@ enum SDKTestFixture {
     static func makeSDK(
         authorization: LocationAuthorization = .always,
         isActive: Bool = true,
-        identity: AppIdentity? = AppIdentity(appKey: "customer-key"),
+        identity: AppIdentity? = AppIdentity(appKey: "customer-key", appSecret: "test-secret"),
         environment: SelectBeaconSDK.Environment = .production,
         locationProvider: FakeLocationProvider = FakeLocationProvider(),
         clock: MutableClock = MutableClock(),
@@ -57,7 +57,7 @@ enum SDKTestFixture {
             queue: queue,
             networkPathObserver: { FakeNetworkPathObserver() },
             absenceExpiryScheduler: absenceScheduler,
-            identity: AppIdentity(appKey: "customer-key")
+            identity: AppIdentity(appKey: "customer-key", appSecret: "test-secret")
         )
     }
 

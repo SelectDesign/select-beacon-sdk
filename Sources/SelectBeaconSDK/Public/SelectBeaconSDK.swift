@@ -89,13 +89,14 @@ public final class SelectBeaconSDK {
     /// make a network request.
     public static func configure(
         appKey: String,
+        appSecret: String,
         environment: Environment = .production
     ) {
         guard !shared.hasStarted else {
             shared.updateOperationalStatus(.degraded(.configurationLocked))
             return
         }
-        guard let identity = AppIdentity(appKey: appKey) else {
+        guard let identity = AppIdentity(appKey: appKey, appSecret: appSecret) else {
             shared.invalidateConfiguration()
             shared.updateOperationalStatus(.degraded(.invalidConfiguration))
             return
@@ -103,7 +104,7 @@ public final class SelectBeaconSDK {
         shared.configure(identity: identity, environment: environment)
     }
 
-    /// Starts detection only when `configure(appKey:)` has completed.
+    /// Starts detection only when `configure(appKey:appSecret:)` has completed.
     ///
     /// Records host intent to range. Actual ranging still depends on host-owned
     /// location authorization and, for When-In-Use, foreground activity.
@@ -299,10 +300,6 @@ public final class SelectBeaconSDK {
     private func makeLiveAuthProvider() -> AuthProvider? {
         guard enablementConfiguration?.endpoint.isUsableHTTPBase == true else {
             return nil
-        }
-        // Auth paused: post ingest without the token broker until it is ready.
-        guard UploadAuthentication.isEnabled else {
-            return PausedAuthProvider()
         }
         guard let configuration = enablementConfiguration?.tokenBrokerConfiguration() else {
             return nil
@@ -523,11 +520,14 @@ public final class SelectBeaconSDK {
         }
         try await queue.clear()
 
+        // Publish after clear so snapshot reads see recovered storage, then
+        // clear durable-queue degrade if the queue is healthy again.
+        await publishPendingReportsSnapshot()
+        await publishDeadLetteredReportsSnapshot()
+
         if case .degraded(.durableQueueUnreadable) = operationalStatus {
             updateOperationalStatusForSession()
         }
-
-        await publishPendingReportsSnapshot()
     }
 
     private func notifyActiveBeaconsChanged() {

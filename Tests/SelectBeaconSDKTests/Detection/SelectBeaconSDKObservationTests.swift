@@ -142,7 +142,7 @@ final class SelectBeaconSDKObservationTests: XCTestCase {
             queue: { _ in InMemoryQueue() },
             networkPathObserver: { FakeNetworkPathObserver() },
             presenceExpiryScheduler: expiryScheduler,
-            identity: AppIdentity(appKey: "customer-key")
+            identity: AppIdentity(appKey: "customer-key", appSecret: "test-secret")
         )
 
         sdk.start()
@@ -199,7 +199,7 @@ final class SelectBeaconSDKObservationTests: XCTestCase {
             queue: { _ in queue },
             networkPathObserver: { FakeNetworkPathObserver() },
             absenceExpiryScheduler: absenceScheduler,
-            identity: AppIdentity(appKey: "customer-key")
+            identity: AppIdentity(appKey: "customer-key", appSecret: "test-secret")
         )
         let update = expectation(description: "Pending report update after pause")
         sdk.onSelectPendingReportsChanged = { reports in
@@ -320,7 +320,7 @@ final class SelectBeaconSDKObservationTests: XCTestCase {
             networkPathObserver: { FakeNetworkPathObserver() },
             diagnosticsReporter: diagnostics,
             absenceExpiryScheduler: absenceScheduler,
-            identity: AppIdentity(appKey: "customer-key")
+            identity: AppIdentity(appKey: "customer-key", appSecret: "test-secret")
         )
 
         sdk.start()
@@ -346,7 +346,7 @@ final class SelectBeaconSDKObservationTests: XCTestCase {
             networkPathObserver: { FakeNetworkPathObserver() },
             diagnosticsReporter: diagnostics,
             absenceExpiryScheduler: absenceScheduler,
-            identity: AppIdentity(appKey: "customer-key")
+            identity: AppIdentity(appKey: "customer-key", appSecret: "test-secret")
         )
 
         sdk.start()

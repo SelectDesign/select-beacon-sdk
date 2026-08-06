@@ -21,17 +21,19 @@ Poison / max-attempt failures must leave Queued and appear under Dead letter.
 ## Setup (host app)
 
 1. Host owns Core Location permission prompts and Info.plist usage strings.
-2. Call `SelectBeaconSDK.configure(appKey:)` then register AppSupport callbacks,
-   then `SelectBeaconSDK.shared.start()`.
+2. Call `SelectBeaconSDK.configure(appKey:appSecret:environment:)` (staging
+   requires an explicit base URL; production is the default), then register
+   AppSupport callbacks, then `SelectBeaconSDK.shared.start()`.
 3. On appear, also call `try await SelectBeaconAppSupport.shared.pendingReports()`
    and `try await SelectBeaconAppSupport.shared.deadLetteredReports()` to load
    queue records from a prior launch.
 4. Optional for local demos only:  
    `SelectBeaconSDK.shared.selectInstallDebugAutoAckUploadSeams()`  
    (`@_spi(SelectApp)` on the SDK module) so flushes auto-acknowledge without a
-   real VIP API. Explicit staging URLs use live auth/HTTP; production remains
-   disabled while its host is `REPLACE_ME_PRODUCTION`. Debug auto-ack drains
-   Queued on success and does **not** dead-letter.
+   real VIP API. Without auto-ack, staging uses live `/sdk/auth/v1` + ingest
+   Authorization. Production remains disabled while its host is
+   `REPLACE_ME_PRODUCTION`. Debug auto-ack drains Queued on success and does
+   **not** dead-letter.
 
 ## Bindings
 

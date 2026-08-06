@@ -8,16 +8,18 @@ final class SelectBeaconSDKColdStartUploadTests: XCTestCase {
 
         func upload(
             detections: [QueuedDetection],
-            bearerToken: String
+            authorization: UploadAuthorization
         ) async throws -> UploadResponse {
-            _ = bearerToken
+            _ = authorization
             uploads.append(detections)
             return .accepted(acknowledgedIDs: detections.map(\.id))
         }
     }
 
     final class CountingAuth: AuthProvider {
-        func validToken() async throws -> String { "token" }
+        func validAuthorization() async throws -> UploadAuthorization {
+            UploadAuthorization(accessToken: "token")
+        }
         func invalidateCachedToken() {}
     }
 
@@ -56,7 +58,7 @@ final class SelectBeaconSDKColdStartUploadTests: XCTestCase {
             networkPathObserver: { path },
             maxAgeScheduler: { maxAge },
             deviceIdentifier: { FixedDeviceIdentifier() },
-            identity: AppIdentity(appKey: "customer-key"),
+            identity: AppIdentity(appKey: "customer-key", appSecret: "test-secret"),
             environment: .staging(baseURL: URL(string: "https://staging.example.com")!)
         )
         sdk.selectInstallUploadSeams(auth: CountingAuth(), transport: transport)
@@ -107,7 +109,7 @@ final class SelectBeaconSDKColdStartUploadTests: XCTestCase {
             uploadTransport: { transport },
             networkPathObserver: { path },
             deviceIdentifier: { FixedDeviceIdentifier() },
-            identity: AppIdentity(appKey: "customer-key"),
+            identity: AppIdentity(appKey: "customer-key", appSecret: "test-secret"),
             environment: .staging(baseURL: URL(string: "https://staging.example.com")!)
         )
         sdk.selectInstallUploadSeams(auth: CountingAuth(), transport: transport)

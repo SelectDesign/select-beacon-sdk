@@ -10,7 +10,7 @@ final class UploadCoordinatorTests: XCTestCase {
         var error: Error?
         var errorOnCalls: Set<Int> = []
 
-        func validToken() async throws -> String {
+        func validAuthorization() async throws -> UploadAuthorization {
             tokenCallCount += 1
             if errorOnCalls.contains(tokenCallCount) {
                 throw error ?? TokenBrokerAuthError.networkRequestFailed
@@ -18,7 +18,7 @@ final class UploadCoordinatorTests: XCTestCase {
             if let error {
                 throw error
             }
-            return token
+            return UploadAuthorization(accessToken: token)
         }
 
         func invalidateCachedToken() {
@@ -37,10 +37,10 @@ final class UploadCoordinatorTests: XCTestCase {
 
         func upload(
             detections: [QueuedDetection],
-            bearerToken: String
+            authorization: UploadAuthorization
         ) async throws -> UploadResponse {
             uploads.append(detections)
-            tokens.append(bearerToken)
+            tokens.append(authorization.accessToken)
             if !statusErrors.isEmpty {
                 throw statusErrors.removeFirst()
             }
@@ -612,9 +612,6 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testUnauthorizedRefreshesTokenAndRetriesBatch() async {
-        UploadAuthentication.isEnabled = true
-        defer { UploadAuthentication.isEnabled = false }
-
         let queue = InMemoryQueue(records: [makeDetection(minor: 4)])
         let transport = FakeTransport()
         transport.statusErrors = [.unauthorized(statusCode: 401)]
@@ -636,9 +633,6 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testUnauthorizedAfterRefreshSchedulesBackoff() async {
-        UploadAuthentication.isEnabled = true
-        defer { UploadAuthentication.isEnabled = false }
-
         let queue = InMemoryQueue(records: [makeDetection(minor: 5)])
         let transport = FakeTransport()
         transport.statusErrors = [

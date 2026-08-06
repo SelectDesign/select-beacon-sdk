@@ -166,7 +166,7 @@ final class SelectBeaconSDKStopFinalizeTests: XCTestCase {
             queue: { _ in FailingQueue() },
             networkPathObserver: { FakeNetworkPathObserver() },
             absenceExpiryScheduler: absenceScheduler,
-            identity: AppIdentity(appKey: "customer-key")
+            identity: AppIdentity(appKey: "customer-key", appSecret: "test-secret")
         )
         let becamePending = expectation(description: "Pending true")
         let cleared = expectation(description: "Pending false after failure")

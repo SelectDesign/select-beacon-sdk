@@ -18,16 +18,18 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
     private actor FakeHTTPDataLoader: HTTPDataLoading {
         private struct TokenPayload: Encodable {
             let accessToken: String
+            let tokenType: String
             let expiresIn: TimeInterval
 
             enum CodingKeys: String, CodingKey {
                 case accessToken = "access_token"
+                case tokenType = "token_type"
                 case expiresIn = "expires_in"
             }
         }
 
         enum Outcome {
-            case token(value: String, expiresIn: TimeInterval, statusCode: Int)
+            case token(value: String, tokenType: String, expiresIn: TimeInterval, statusCode: Int)
             case networkFailure
         }
 
@@ -55,9 +57,9 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
             switch outcome {
             case .networkFailure:
                 throw TokenBrokerAuthError.networkRequestFailed
-            case .token(let value, let expiresIn, let statusCode):
+            case .token(let value, let tokenType, let expiresIn, let statusCode):
                 let body = try JSONEncoder().encode(
-                    TokenPayload(accessToken: value, expiresIn: expiresIn)
+                    TokenPayload(accessToken: value, tokenType: tokenType, expiresIn: expiresIn)
                 )
                 let response = HTTPURLResponse(
                     url: request.url ?? URL(fileURLWithPath: "/"),
@@ -90,8 +92,8 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
         clock: Clock,
         refreshSafetyMargin: TimeInterval = 60
     ) throws -> TokenBrokerAuthProvider {
-        guard let tokenEndpoint = URL(string: "https://api.select.example.com/ingest/auth/v1"),
-              let identity = AppIdentity(appKey: "select-app-key"),
+        guard let tokenEndpoint = URL(string: "https://api.select.example.com/sdk/auth/v1"),
+              let identity = AppIdentity(appKey: "select-app-key", appSecret: "select-app-secret"),
               let configuration = TokenBrokerConfiguration(
                   identity: identity,
                   tokenEndpoint: tokenEndpoint
@@ -110,29 +112,30 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
     func testReturnsCachedTokenWhileItIsStillValid() async throws {
         let clock = MutableClock(now: initialDate)
         let client = FakeHTTPDataLoader(outcomes: [
-            .token(value: "cached-token", expiresIn: 300, statusCode: 200),
+            .token(value: "cached-token", tokenType: "Bearer", expiresIn: 300, statusCode: 200),
         ])
         let provider = try makeProvider(client: client, clock: clock)
 
-        let firstToken = try await provider.validToken()
-        let secondToken = try await provider.validToken()
+        let first = try await provider.validAuthorization()
+        let second = try await provider.validAuthorization()
         let requestCount = await client.requestCount()
 
-        XCTAssertEqual(firstToken, "cached-token")
-        XCTAssertEqual(secondToken, "cached-token")
+        XCTAssertEqual(first.accessToken, "cached-token")
+        XCTAssertEqual(first.headerValue, "Bearer cached-token")
+        XCTAssertEqual(second.accessToken, "cached-token")
         XCTAssertEqual(requestCount, 1)
     }
 
     func testRequestsTokenWhenNoTokenIsCached() async throws {
         let client = FakeHTTPDataLoader(outcomes: [
-            .token(value: "new-token", expiresIn: 300, statusCode: 200),
+            .token(value: "new-token", tokenType: "Bearer", expiresIn: 300, statusCode: 200),
         ])
         let provider = try makeProvider(
             client: client,
             clock: MutableClock(now: initialDate)
         )
 
-        let token = try await provider.validToken()
+        let authorization = try await provider.validAuthorization()
         let requestCount = await client.requestCount()
         let requestBody = await client.firstRequestBody()
         let unwrappedRequestBody = try XCTUnwrap(requestBody)
@@ -140,32 +143,37 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
             try JSONSerialization.jsonObject(with: unwrappedRequestBody) as? [String: String]
         )
 
-        XCTAssertEqual(token, "new-token")
+        XCTAssertEqual(authorization.accessToken, "new-token")
         XCTAssertEqual(requestCount, 1)
-        XCTAssertEqual(request, ["app_key": "select-app-key"])
+        XCTAssertEqual(
+            request,
+            ["app_key": "select-app-key", "app_secret": "select-app-secret"]
+        )
     }
 
     func testRefreshesTokenWithinSafetyMargin() async throws {
         let clock = MutableClock(now: initialDate)
         let client = FakeHTTPDataLoader(outcomes: [
-            .token(value: "first-token", expiresIn: 120, statusCode: 200),
-            .token(value: "refreshed-token", expiresIn: 300, statusCode: 200),
+            .token(value: "first-token", tokenType: "Bearer", expiresIn: 120, statusCode: 200),
+            .token(value: "refreshed-token", tokenType: "Bearer", expiresIn: 300, statusCode: 200),
         ])
         let provider = try makeProvider(client: client, clock: clock)
 
-        let firstToken = try await provider.validToken()
+        let first = try await provider.validAuthorization()
         clock.now = initialDate.addingTimeInterval(60)
-        let refreshedToken = try await provider.validToken()
+        let refreshed = try await provider.validAuthorization()
         let requestCount = await client.requestCount()
 
-        XCTAssertEqual(firstToken, "first-token")
-        XCTAssertEqual(refreshedToken, "refreshed-token")
+        XCTAssertEqual(first.accessToken, "first-token")
+        XCTAssertEqual(refreshed.accessToken, "refreshed-token")
         XCTAssertEqual(requestCount, 2)
     }
 
     func testConcurrentRequestsShareOneRefresh() async throws {
         let client = FakeHTTPDataLoader(
-            outcomes: [.token(value: "shared-token", expiresIn: 300, statusCode: 200)],
+            outcomes: [
+                .token(value: "shared-token", tokenType: "Bearer", expiresIn: 300, statusCode: 200),
+            ],
             delayNanoseconds: 50_000_000
         )
         let provider = try makeProvider(
@@ -173,15 +181,15 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
             clock: MutableClock(now: initialDate)
         )
 
-        async let first = provider.validToken()
-        async let second = provider.validToken()
+        async let first = provider.validAuthorization()
+        async let second = provider.validAuthorization()
 
-        let firstToken = try await first
-        let secondToken = try await second
+        let firstAuth = try await first
+        let secondAuth = try await second
         let requestCount = await client.requestCount()
 
-        XCTAssertEqual(firstToken, "shared-token")
-        XCTAssertEqual(secondToken, "shared-token")
+        XCTAssertEqual(firstAuth.accessToken, "shared-token")
+        XCTAssertEqual(secondAuth.accessToken, "shared-token")
         XCTAssertEqual(requestCount, 1)
     }
 
@@ -193,7 +201,7 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
         )
 
         do {
-            _ = try await provider.validToken()
+            _ = try await provider.validAuthorization()
             XCTFail("Expected token retrieval to fail")
         } catch let error as TokenBrokerAuthError {
             XCTAssertEqual(error, .networkRequestFailed)
@@ -204,7 +212,7 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
 
     func testTokenIsNeverWrittenToDetectionQueue() async throws {
         let client = FakeHTTPDataLoader(outcomes: [
-            .token(value: "memory-only-token", expiresIn: 300, statusCode: 200),
+            .token(value: "memory-only-token", tokenType: "Bearer", expiresIn: 300, statusCode: 200),
         ])
         let provider = try makeProvider(
             client: client,
@@ -220,11 +228,12 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
         let detection = QueuedDetectionFixtures.make(latestTimestamp: initialDate)
 
         try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
-        let token = try await provider.validToken()
+        let authorization = try await provider.validAuthorization()
 
         let persistedQueue = try XCTUnwrap(fileStore.files[fileURL])
         let persistedText = try XCTUnwrap(String(data: persistedQueue, encoding: .utf8))
-        XCTAssertEqual(token, "memory-only-token")
+        XCTAssertEqual(authorization.accessToken, "memory-only-token")
         XCTAssertFalse(persistedText.contains("memory-only-token"))
+        XCTAssertFalse(persistedText.contains("select-app-secret"))
     }
 }
