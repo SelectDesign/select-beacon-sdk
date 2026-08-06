@@ -1,38 +1,46 @@
 # SelectBeaconSDK
 
-An iOS 17+ Swift Package that ranges the Select iBeacon fleet with Core Location.
+An iOS 17+ Swift Package that detects the Select iBeacon fleet with Core
+Location (region monitoring + ranging).
 
 ## How detection and reporting work
 
 When a phone is near a Select beacon, the SDK does **not** send a separate
 network report for every radio ping. Instead it groups activity into short
-observation periods and sends a compact summary afterward.
+observation periods and uses **store-and-forward**: save each closed period to
+a durable on-device queue first, then drain that queue to the API in batches
+when the earliest good opportunity arrives. Capture never depends on a
+successful upload.
 
 ```mermaid
 flowchart LR
   Near[Phone near beacon] --> Minute[One-minute summary]
-  Minute -->|period ends or beacon leaves| Saved[Saved on device]
-  Saved --> Sent[Sent to the cloud]
+  Minute -->|period ends or beacon leaves| Saved[Stored on device]
+  Saved --> Sent[Forwarded to the cloud]
 ```
 
 **In plain terms:**
 
 1. **Listen.** The app listens for Select beacons while it is allowed to use
-   location (permission is owned by the host app, not this SDK).
+   location (permission is owned by the host app, not this SDK). Under Always
+   authorization, region monitoring can wake a suspended app when the host has
+   enabled location background mode; ranging then captures major/minor/RSSI.
 2. **Summarize each minute.** For about 60 seconds per beacon, the SDK keeps a
    running summary: how many times it was seen, the strongest signal, the most
    recent approximate location it already has on hand, and the last time it was
    heard.
-3. **Save a report when the period ends.** That happens when the minute is up,
+3. **Store a report when the period ends.** That happens when the minute is up,
    or sooner if the beacon has not been heard for about 30 seconds (the person
    likely walked away). The report is written to the phone first so it is not
    lost if the network is down.
-4. **Send in batches when it is a good time.** Queued reports upload together
+4. **Forward in batches when it is a good time.** Queued reports upload together
    when no Select beacon has been heard for about a minute (foreground), when
    the oldest saved report is about five minutes old (so a busy venue cannot
    stall forever), when the app moves to background or returns to the
-   foreground, or when connectivity comes back. Short background “wake”
-   moments save reports only and do not open a network upload. If the phone is
+   foreground, when connectivity comes back, on `start()` if a prior-session
+   backlog exists, or after enqueue when online. Background region wakes attempt
+   only a **single batch** so the wake stays short; anything left remains on
+   disk until a later full drain. If the phone is
    offline, reports stay on the device (no send attempt). If a send is tried
    and the API is unreachable, the SDK keeps the reports and retries with
    exponential backoff: 15 seconds, then 30, 60, … up to five minutes, resetting
@@ -43,8 +51,9 @@ Location is approximate and battery-conscious (“which area / store,” not
 continuous high-accuracy GPS). Nearby presence for the Select app UI is
 separate from “a report is ready to upload.”
 
-Technical design detail for engineers is in the
-[architecture guide](docs/architecture.md).
+Technical design detail for engineers — including the named store-and-forward
+pattern and trigger rationale — is in the
+[architecture guide](docs/architecture.md) (§5b).
 
 ## Integration
 
@@ -65,8 +74,8 @@ SelectBeaconSDK.shared.start()
 ```
 
 Call `SelectBeaconSDK.shared.stop()` when distributor-level detection should end.
-It stops ranging, finalizes open observation windows into the durable queue,
-and clears active presence. Operational
+It stops region monitoring and ranging, finalizes open observation windows into
+the durable queue, and clears active presence. Operational
 `ready`, `awaitingPermission`, `paused`, `ranging`, and recoverable
 `degraded` states are available through `operationalStatus` and
 `onOperationalStatusChanged`.
@@ -142,12 +151,12 @@ Replace the production placeholder before enabling production upload.
 Configuration cannot change after `start()`; stop and use a fresh process/session
 before switching environments.
 
-When a usable environment base URL is configured, each ingest body is a
-JSON:API document posted to `{base}/ingest/sdk/v1`:
+When a usable environment base URL is configured, each ingest body is posted to
+`{base}/ingest/sdk/v1/detections`:
 
 ```json
 {
-  "data": [
+  "detections": [
     {
       "type": "sdk_beacon",
       "attributes": {
@@ -178,16 +187,20 @@ the durable queue.
 
 The SDK never requests location authorization. The host app must provide its own
 `NSLocationWhenInUseUsageDescription` and, if background detection is required,
-the appropriate Always authorization usage description and location background mode.
+the appropriate Always authorization usage description and location background
+mode (`UIBackgroundModes` / capability). Real beacon wakes depend on that host
+configuration; the SDK only implements Core Location region monitoring + ranging.
 
-- `authorizedAlways`: ranging may continue in the background.
-- `authorizedWhenInUse`: ranging runs only while the app is active.
+- `authorizedAlways`: region monitoring stays active when backgrounded; ranging
+  runs in short bursts on region enter/inside (not continuous suspended ranging).
+- `authorizedWhenInUse`: detection runs only while the app is active.
 - `notDetermined`, denied, or restricted: the SDK remains quiet.
 
 ## Testing
 
-Run package tests with an iOS Simulator destination. Beacon ranging itself must be
-validated on physical iPhone and iPad hardware; the Simulator cannot detect iBeacons.
+Run package tests with an iOS Simulator destination. Beacon region monitoring and
+ranging must be validated on physical iPhone and iPad hardware; the Simulator
+cannot detect iBeacons.
 
 For production gates, Xcode setup, simulator and device validation, version
 tagging, and rollback guidance, follow [the release runbook](docs/releasing.md).

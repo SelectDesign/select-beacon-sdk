@@ -17,12 +17,13 @@ description: >-
 
 ## Implementation checklist
 
-- [ ] Honor always-on SelectBeacon constraints (Core Location only, no permission requests, main-actor facade).
+- [ ] Honor always-on SelectBeacon constraints (Core Location region monitoring +
+      ranging, no permission requests, main-actor facade).
 - [ ] Keep standard public API minimal; Select-only data goes through AppSupport / SPI.
 - [ ] Inject time and I/O; pure stores take `now`.
 - [ ] If host-visible state changes, mirror on AppSupport (snapshot + change callback; seed on init).
 - [ ] Keep auth and ingest aligned with the confirmed endpoints and JSON:API
-  contract; production remains disabled while its host is the placeholder.
+      contract; production remains disabled while its host is the placeholder.
 - [ ] Update docs when behavior or wire format changes (`architecture.md`, `decisions.md`, README / consumer prompt as needed).
 - [ ] Add or extend unit tests for the new behavior and failure paths.
 

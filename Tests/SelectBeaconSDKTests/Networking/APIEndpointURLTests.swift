@@ -10,7 +10,7 @@ final class APIEndpointURLTests: XCTestCase {
         )
         XCTAssertEqual(
             endpoint.ingestURL?.absoluteString,
-            "https://api.select.example.com/ingest/sdk/v1"
+            "https://api.select.example.com/ingest/sdk/v1/detections"
         )
         XCTAssertTrue(endpoint.isUsableHTTPBase)
     }
@@ -19,7 +19,7 @@ final class APIEndpointURLTests: XCTestCase {
         let endpoint = APIEndpoint(baseURL: "https://api.select.example.com/")
         XCTAssertEqual(
             endpoint.ingestURL?.absoluteString,
-            "https://api.select.example.com/ingest/sdk/v1"
+            "https://api.select.example.com/ingest/sdk/v1/detections"
         )
     }
 

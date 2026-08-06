@@ -158,19 +158,7 @@ final class CoreLocationProviderTests: XCTestCase {
     }
 
     func testSignificantChangeCanBeDisabled() {
-        let configuration = SDKConfiguration(
-            monitoredUUIDs: SDKConfiguration.default.monitoredUUIDs,
-            windowDuration: 60,
-            absenceTimeout: 30,
-            sendDebounce: 60,
-            maxQueueAge: 300,
-            uploadBatchLimit: 50,
-            uploadRetryBackoff: 15,
-            uploadRetryBackoffMax: 300,
-            locationAccuracy: kCLLocationAccuracyHundredMeters,
-            locationDistanceFilterMeters: 100,
-            useSignificantChangeBaseline: false
-        )
+        let configuration = SDKConfiguration.default.with(useSignificantChangeBaseline: false)
         let manager = FakeDeviceLocationManager()
         let provider = CoreLocationProvider(configuration: configuration, locationManager: manager)
         provider.start()

@@ -3,17 +3,10 @@ import XCTest
 
 @MainActor
 final class HTTPIngestUploadTransportTests: XCTestCase {
-    private final class FakeDeviceIdentifier: DeviceIdentifying {
-        var deviceId: String?
-
-        init(deviceId: String? = "device-123") {
-            self.deviceId = deviceId
-        }
-    }
-
     private final class FakeHTTPDataLoader: HTTPDataLoading, @unchecked Sendable {
         private(set) var requests: [URLRequest] = []
         var statusCode = 200
+        var headerFields: [String: String]?
         var shouldFailNetwork = false
 
         func data(for request: URLRequest) async throws -> (Data, URLResponse) {
@@ -25,7 +18,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
                 url: request.url ?? URL(fileURLWithPath: "/"),
                 statusCode: statusCode,
                 httpVersion: nil,
-                headerFields: nil
+                headerFields: headerFields
             )!
             return (Data(), response)
         }
@@ -52,7 +45,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         let client = FakeHTTPDataLoader()
         let detections = [makeDetection(minor: 1), makeDetection(minor: 2)]
         let transport = HTTPIngestUploadTransport(
-            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1")!,
+            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
             httpClient: client,
             deviceIdentifier: FakeDeviceIdentifier()
         )
@@ -65,10 +58,14 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         XCTAssertEqual(response, .accepted(acknowledgedIDs: detections.map(\.id)))
         let request = try XCTUnwrap(client.requests.first)
         XCTAssertEqual(request.httpMethod, "POST")
-        XCTAssertEqual(
-            request.value(forHTTPHeaderField: "Authorization"),
-            "Bearer token-abc"
-        )
+        if UploadAuthentication.isEnabled {
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Authorization"),
+                "Bearer token-abc"
+            )
+        } else {
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        }
         XCTAssertEqual(
             request.value(forHTTPHeaderField: "Content-Type"),
             HTTPIngestUploadTransport.jsonAPIContentType
@@ -79,17 +76,17 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         )
         let body = try XCTUnwrap(request.httpBody)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        let data = try XCTUnwrap(json["data"] as? [[String: Any]])
-        XCTAssertEqual(data.count, 2)
-        XCTAssertEqual(data.first?["type"] as? String, "sdk_beacon")
-        XCTAssertNil(data.first?["id"])
+        let resources = try XCTUnwrap(json["detections"] as? [[String: Any]])
+        XCTAssertEqual(resources.count, 2)
+        XCTAssertEqual(resources.first?["type"] as? String, "sdk_beacon")
+        XCTAssertNil(resources.first?["id"])
     }
 
     func testNon200Throws() async {
         let client = FakeHTTPDataLoader()
         client.statusCode = 500
         let transport = HTTPIngestUploadTransport(
-            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1")!,
+            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
             httpClient: client,
             deviceIdentifier: FakeDeviceIdentifier()
         )
@@ -101,7 +98,74 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
             )
             XCTFail("Expected failure")
         } catch let error as HTTPIngestUploadError {
-            XCTAssertEqual(error, .unexpectedStatusCode(500))
+            XCTAssertEqual(error, .serverError(statusCode: 500))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testRetryAfterHeaderThrowsRateLimited() async {
+        let client = FakeHTTPDataLoader()
+        client.statusCode = 429
+        client.headerFields = ["Retry-After": "90"]
+        let transport = HTTPIngestUploadTransport(
+            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
+            httpClient: client,
+            deviceIdentifier: FakeDeviceIdentifier()
+        )
+
+        do {
+            _ = try await transport.upload(
+                detections: [makeDetection(minor: 1)],
+                bearerToken: "token"
+            )
+            XCTFail("Expected rate limit failure")
+        } catch let error as HTTPIngestUploadError {
+            XCTAssertEqual(error, .rateLimited(retryAfter: 90))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test429WithoutRetryAfterStillRateLimited() async {
+        let client = FakeHTTPDataLoader()
+        client.statusCode = 429
+        let transport = HTTPIngestUploadTransport(
+            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
+            httpClient: client,
+            deviceIdentifier: FakeDeviceIdentifier()
+        )
+
+        do {
+            _ = try await transport.upload(
+                detections: [makeDetection(minor: 1)],
+                bearerToken: "token"
+            )
+            XCTFail("Expected rate limit failure")
+        } catch let error as HTTPIngestUploadError {
+            XCTAssertEqual(error, .rateLimited(retryAfter: nil))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func test400ThrowsClientError() async {
+        let client = FakeHTTPDataLoader()
+        client.statusCode = 400
+        let transport = HTTPIngestUploadTransport(
+            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
+            httpClient: client,
+            deviceIdentifier: FakeDeviceIdentifier()
+        )
+
+        do {
+            _ = try await transport.upload(
+                detections: [makeDetection(minor: 1)],
+                bearerToken: "token"
+            )
+            XCTFail("Expected client error")
+        } catch let error as HTTPIngestUploadError {
+            XCTAssertEqual(error, .clientError(statusCode: 400))
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
@@ -110,7 +174,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
     func testMissingDeviceIdThrowsBeforeNetwork() async {
         let client = FakeHTTPDataLoader()
         let transport = HTTPIngestUploadTransport(
-            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1")!,
+            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
             httpClient: client,
             deviceIdentifier: FakeDeviceIdentifier(deviceId: nil)
         )

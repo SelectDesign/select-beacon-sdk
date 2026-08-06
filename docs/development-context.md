@@ -5,7 +5,8 @@ crowdsource locations of Select retail assets.
 
 ## Non-negotiable constraints
 
-- Use Core Location iBeacon ranging only; do not add CoreBluetooth scanning.
+- Use Core Location iBeacon region monitoring plus ranging; do not add
+  CoreBluetooth scanning.
 - Ship one Select UUID: `76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911`.
 - Identify beacons by UUID, Major, and Minor. The backend—not the SDK—resolves serials.
 - Observe host-owned location authorization; never request permission.
@@ -26,10 +27,14 @@ crowdsource locations of Select retail assets.
 - Stamp reports from a low-power cached location provider; never request
   location authorization or one-shot GPS per sighting.
 - Persist finalized reports through an actor-isolated queue before Select
-  adapter notification. Transmit later in debounced batches with offline
-  retry. A cancelled delivery session must not emit delayed adapter updates.
-  Upload auth is `{base}/ingest/auth/v1`; ingest is JSON:API
-  `{base}/ingest/sdk/v1` once a usable environment host is configured.
+  adapter notification. Transmit with **store-and-forward**: enqueue immediately,
+  drain later in connectivity-gated batches with offline retry (never per-event
+  upload; never block capture on the network). Background region-wake flushes
+  are bounded to one batch; full drains use quiet debounce, max-age, lifecycle,
+  connectivity, and cold-start triggers. A cancelled delivery session must
+  not emit delayed adapter updates. Upload auth is `{base}/ingest/auth/v1`;
+  ingest is `{base}/ingest/sdk/v1/detections` once a usable environment host is
+  configured.
 
 ## Safety requirements
 

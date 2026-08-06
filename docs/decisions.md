@@ -2,9 +2,14 @@
 
 ## Detection and identity
 
-- Use Core Location iBeacon ranging only; no raw Bluetooth scanning.
+- Use Core Location iBeacon **region monitoring** (wake) plus **ranging**
+  (major/minor/RSSI). No raw Bluetooth / CoreBluetooth scanning.
 - Ship one fleet UUID: `76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911`.
-  Collection-shaped internal storage leaves room for future fleet expansion.
+  Collection-shaped internal storage leaves room for future fleet expansion
+  (soft-capped so the SDK does not exhaust the app-wide 20-region budget shared
+  with the host).
+- Background beacon wakes require host location background capability
+  (`UIBackgroundModes`); the SDK implements monitoring/ranging only.
 - Major identifies the program (Pernod = 1); Minor identifies the unit.
 - The backend resolves serials. The SDK reports UUID, Major, and Minor only.
 
@@ -24,8 +29,10 @@
 ## Permission, lifecycle, and concurrency
 
 - Observe host-owned location authorization; never request permission.
-- Always authorization may range in background. When-In-Use ranges only while
-  the app is active.
+- Always authorization keeps the engine started when backgrounded: region
+  monitoring can wake the app (host location background mode required); ranging
+  runs on enter/inside bursts, not continuous background ranging. When-In-Use
+  detects only while the app is active.
 - `SelectBeaconSDK` and Apple-system adapters are main-actor isolated.
 - The package includes BeaconTest harness source for physical-device testing.
 
@@ -58,16 +65,34 @@
 
 ## Upload and authentication
 
-- Attempt batches on foreground sighting quiet (60s), maximum queue age (300s),
-  app background/foreground, or connectivity return.
-- Offline means retain without an attempt or backoff. Failed sends back off
+- Transmission is **store-and-forward**: finalize → durable local queue
+  immediately; drain to the API in batches on the earliest connectivity-gated
+  opportunity. Never per-event HTTP; never block capture on the network. Chosen
+  for battery-friendly batching, offline retention, background resilience, and
+  at-least-once eventual delivery in a crowdsourced / delay-tolerant setting
+  (see `architecture.md` §5b).
+- **Auth is temporarily paused** (`UploadAuthentication.isEnabled == false`):
+  ingest POSTs without calling the token broker and without an `Authorization`
+  header. Re-enable by setting that flag to `true` when the broker is ready;
+  `TokenBrokerAuthProvider` and the 401 refresh path remain in place.
+- Forward triggers: foreground sighting quiet (60s), maximum queue age (300s),
+  app background/foreground, connectivity return, cold-start backlog flush, or
+  post-enqueue opportunistic flush when online. **Background wake / background
+  sighting flushes are bounded to one batch** so the wake window stays short;
+  remaining records stay durable until a later full-drain trigger.
+- Offline means retain without an attempt or backoff. Retryable failures back off
   15s, doubling to 300s, and reset after successful acknowledgement.
-- Background ranging wakes enqueue only.
+  `Retry-After` (including header-less 429 → exponential) is honored for rate
+  limits. 401/403 invalidates the token, refreshes once, and retries immediately.
+  Other 4xx dead-letter the batch; retryable failures dead-letter after
+  `maxUploadAttempts`. Pending queue size/age caps apply with eviction diagnostics.
 - Auth is `POST {base}/ingest/auth/v1` with `app-key`; responses use
   `access-token` and `expires-in`.
-- Ingest is JSON:API `POST {base}/ingest/sdk/v1`, resource type `sdk_beacon`,
-  kebab-case attributes, and Bearer authorization. HTTP 200 acknowledges the
-  posted batch.
+- Ingest is `POST {base}/ingest/sdk/v1/detections` with body
+  `{ "detections": [ { "type": "sdk_beacon", "attributes": … } ] }`,
+  kebab-case attributes (including stable `idempotency-key`), and Bearer
+  authorization. HTTP 200 acknowledges the posted batch. Backend must dedupe on
+  `idempotency-key` for at-least-once re-sends.
 - The SDK obtains short-lived tokens using `appKey` only. It never holds or
   transmits an app secret or Auth0 client secret.
 - The production host remains `REPLACE_ME_PRODUCTION` until replaced; explicit

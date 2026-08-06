@@ -1,10 +1,18 @@
 import Foundation
 
+/// Result of appending one detection to the durable pending queue.
+struct EnqueueResult: Equatable, Sendable {
+    let evictedCount: Int
+
+    static let none = EnqueueResult(evictedCount: 0)
+}
+
 /// The on-disk representation of one finalized observation-window report.
 ///
 /// Separate from live ranging models: includes a generated queue-record ID and
 /// window aggregates so the upload coordinator can retry and acknowledge one
-/// durable record.
+/// durable record. `id` is also the wire `idempotency-key` and must not change
+/// across retries.
 struct QueuedDetection: Codable, Equatable, Sendable {
     let id: UUID
     let uuid: UUID
@@ -17,18 +25,23 @@ struct QueuedDetection: Codable, Equatable, Sendable {
     let location: LocationFix?
     /// When the report was durably enqueued; used for the max-queue-age flush cap.
     let queuedAt: Date
+    /// Retryable upload attempts completed for this record (persisted across launches).
+    let uploadAttemptCount: Int
 
     init(report: FinalizedBeaconReport, queuedAt: Date) {
-        id = UUID()
-        uuid = report.uuid
-        major = report.major
-        minor = report.minor
-        bestRSSI = report.bestRSSI
-        latestTimestamp = report.latestTimestamp
-        windowStartedAt = report.windowStartedAt
-        observationCount = report.observationCount
-        location = report.location
-        self.queuedAt = queuedAt
+        self.init(
+            id: UUID(),
+            uuid: report.uuid,
+            major: report.major,
+            minor: report.minor,
+            bestRSSI: report.bestRSSI,
+            latestTimestamp: report.latestTimestamp,
+            windowStartedAt: report.windowStartedAt,
+            observationCount: report.observationCount,
+            location: report.location,
+            queuedAt: queuedAt,
+            uploadAttemptCount: 0
+        )
     }
 
     init(
@@ -40,9 +53,38 @@ struct QueuedDetection: Codable, Equatable, Sendable {
         windowStartedAt: Date,
         observationCount: Int,
         location: LocationFix?,
-        queuedAt: Date
+        queuedAt: Date,
+        uploadAttemptCount: Int = 0
     ) {
-        id = UUID()
+        self.init(
+            id: UUID(),
+            uuid: uuid,
+            major: major,
+            minor: minor,
+            bestRSSI: bestRSSI,
+            latestTimestamp: latestTimestamp,
+            windowStartedAt: windowStartedAt,
+            observationCount: observationCount,
+            location: location,
+            queuedAt: queuedAt,
+            uploadAttemptCount: uploadAttemptCount
+        )
+    }
+
+    init(
+        id: UUID,
+        uuid: UUID,
+        major: Int,
+        minor: Int,
+        bestRSSI: Int,
+        latestTimestamp: Date,
+        windowStartedAt: Date,
+        observationCount: Int,
+        location: LocationFix?,
+        queuedAt: Date,
+        uploadAttemptCount: Int
+    ) {
+        self.id = id
         self.uuid = uuid
         self.major = major
         self.minor = minor
@@ -52,6 +94,23 @@ struct QueuedDetection: Codable, Equatable, Sendable {
         self.observationCount = observationCount
         self.location = location
         self.queuedAt = queuedAt
+        self.uploadAttemptCount = uploadAttemptCount
+    }
+
+    func withUploadAttemptCount(_ count: Int) -> QueuedDetection {
+        QueuedDetection(
+            id: id,
+            uuid: uuid,
+            major: major,
+            minor: minor,
+            bestRSSI: bestRSSI,
+            latestTimestamp: latestTimestamp,
+            windowStartedAt: windowStartedAt,
+            observationCount: observationCount,
+            location: location,
+            queuedAt: queuedAt,
+            uploadAttemptCount: count
+        )
     }
 
     /// Maps the private persistence record into the Select adapter's read-only
@@ -84,6 +143,7 @@ struct QueuedDetection: Codable, Equatable, Sendable {
         case observationCount
         case location
         case queuedAt
+        case uploadAttemptCount
     }
 
     init(from decoder: Decoder) throws {
@@ -107,6 +167,7 @@ struct QueuedDetection: Codable, Equatable, Sendable {
         observationCount = try container.decodeIfPresent(Int.self, forKey: .observationCount) ?? 1
         location = try container.decodeIfPresent(LocationFix.self, forKey: .location)
         queuedAt = try container.decodeIfPresent(Date.self, forKey: .queuedAt) ?? latestTimestamp
+        uploadAttemptCount = try container.decodeIfPresent(Int.self, forKey: .uploadAttemptCount) ?? 0
     }
 
     func encode(to encoder: Encoder) throws {
@@ -121,32 +182,32 @@ struct QueuedDetection: Codable, Equatable, Sendable {
         try container.encode(observationCount, forKey: .observationCount)
         try container.encodeIfPresent(location, forKey: .location)
         try container.encode(queuedAt, forKey: .queuedAt)
+        try container.encode(uploadAttemptCount, forKey: .uploadAttemptCount)
     }
 }
 
 /// Storage boundary for reportable detections.
-///
-/// `async` marks a potential actor or disk-I/O boundary. Swift callers must use
-/// `await`, which makes the suspension point explicit; code running on the main
-/// actor can continue processing other events while the queue works.
 protocol DurableDetectionQueue: Sendable {
-    func enqueue(_ detection: QueuedDetection) async throws
+    func enqueue(_ detection: QueuedDetection, now: Date) async throws -> EnqueueResult
     func nextBatch(limit: Int) async throws -> [QueuedDetection]
     func pendingRecords() async throws -> [QueuedDetection]
     func acknowledge(ids: [UUID]) async throws
+    /// Increments `uploadAttemptCount` by one for each matching pending id and persists.
+    func recordUploadAttempts(for ids: [UUID]) async throws
+    /// Moves matching pending records into the durable dead-letter store.
+    func deadLetter(ids: [UUID]) async throws
+    /// Dead-lettered records retained for diagnostics (not uploaded).
+    func deadLetteredRecords() async throws -> [QueuedDetection]
     /// Empties the durable queue. Implementations must succeed even when the
     /// on-disk payload is corrupted so hosts can recover from unreadable state.
     func clear() async throws
 }
 
 extension DurableDetectionQueue {
-    /// Default full FIFO inspection used by the Select-app adapter. Upload code
-    /// can override this later with an explicit batch-selection policy.
     func pendingRecords() async throws -> [QueuedDetection] {
         try await nextBatch(limit: .max)
     }
 
-    /// FIFO head enqueue time, used to schedule the max-queue-age flush cap.
     func oldestQueuedAt() async throws -> Date? {
         try await nextBatch(limit: 1).first?.queuedAt
     }
@@ -180,44 +241,64 @@ struct DefaultFileStore: FileStoring {
 }
 
 /// Actor-isolated, persisted storage for detections awaiting upload.
-///
-/// An actor is Swift's serialized mutable-state container. Unlike a lock, its
-/// methods suspend at `await` points rather than blocking the main thread.
 actor FileDetectionQueue: DurableDetectionQueue {
     private let fileStore: FileStoring
     private let fileURL: URL
+    private let deadLetterURL: URL
+    private let maxQueueSize: Int
+    private let maxRecordAge: TimeInterval
     private var records: [QueuedDetection] = []
+    private var deadLetters: [QueuedDetection] = []
     private var hasLoaded = false
+    private var hasLoadedDeadLetters = false
 
     init(
         storageIdentifier: String,
         fileStore: FileStoring = DefaultFileStore(),
-        fileURL: URL? = nil
+        fileURL: URL? = nil,
+        deadLetterURL: URL? = nil,
+        maxQueueSize: Int = SDKConfiguration.default.maxQueueSize,
+        maxRecordAge: TimeInterval = SDKConfiguration.default.maxRecordAge
     ) {
         self.fileStore = fileStore
-        self.fileURL = fileURL ?? Self.defaultFileURL(storageIdentifier: storageIdentifier)
+        self.fileURL = fileURL ?? Self.defaultFileURL(
+            storageIdentifier: storageIdentifier,
+            fileNamePrefix: "pending-detections"
+        )
+        self.deadLetterURL = deadLetterURL ?? Self.defaultFileURL(
+            storageIdentifier: storageIdentifier,
+            fileNamePrefix: "dead-letter-detections"
+        )
+        self.maxQueueSize = max(1, maxQueueSize)
+        self.maxRecordAge = max(0, maxRecordAge)
     }
 
-    func enqueue(_ detection: QueuedDetection) async throws {
-        // Load before appending so a process restart preserves FIFO order rather
-        // than replacing the existing persisted queue.
+    func enqueue(_ detection: QueuedDetection, now: Date) async throws -> EnqueueResult {
         try loadIfNeeded()
         let previousRecords = records
+        var evicted = 0
+
+        let cutoff = now.addingTimeInterval(-maxRecordAge)
+        let beforeAge = records.count
+        records.removeAll { $0.queuedAt < cutoff }
+        evicted += beforeAge - records.count
+
+        while records.count >= maxQueueSize {
+            records.removeFirst()
+            evicted += 1
+        }
+
         records.append(detection)
         do {
             try persist()
         } catch {
-            // A queue record is considered pending only after the atomic file
-            // replacement succeeds. Restore actor memory so a later snapshot
-            // cannot expose a record that would disappear on process restart.
             records = previousRecords
             throw error
         }
+        return EnqueueResult(evictedCount: evicted)
     }
 
     func nextBatch(limit: Int) async throws -> [QueuedDetection] {
-        // Non-destructive peek. Records leave the queue only through `acknowledge`
-        // after the upload transport reports HTTP 200 for the batch.
         try loadIfNeeded()
         return Array(records.prefix(Swift.max(0, limit)))
     }
@@ -230,16 +311,53 @@ actor FileDetectionQueue: DurableDetectionQueue {
         do {
             try persist()
         } catch {
-            // Keep memory aligned with the still-existing file. A future
-            // uploader may retry acknowledgement without losing this record.
             records = previousRecords
             throw error
         }
     }
 
+    func recordUploadAttempts(for ids: [UUID]) async throws {
+        try loadIfNeeded()
+        let previousRecords = records
+        let idSet = Set(ids)
+        records = records.map { record in
+            guard idSet.contains(record.id) else { return record }
+            return record.withUploadAttemptCount(record.uploadAttemptCount + 1)
+        }
+        do {
+            try persist()
+        } catch {
+            records = previousRecords
+            throw error
+        }
+    }
+
+    func deadLetter(ids: [UUID]) async throws {
+        try loadIfNeeded()
+        try loadDeadLettersIfNeeded()
+        let previousRecords = records
+        let previousDeadLetters = deadLetters
+        let idSet = Set(ids)
+        let moving = records.filter { idSet.contains($0.id) }
+        guard !moving.isEmpty else { return }
+        records.removeAll { idSet.contains($0.id) }
+        deadLetters.append(contentsOf: moving)
+        do {
+            try persist()
+            try persistDeadLetters()
+        } catch {
+            records = previousRecords
+            deadLetters = previousDeadLetters
+            throw error
+        }
+    }
+
+    func deadLetteredRecords() async throws -> [QueuedDetection] {
+        try loadDeadLettersIfNeeded()
+        return deadLetters
+    }
+
     func clear() async throws {
-        // Bypass `loadIfNeeded` so a corrupted payload can still be overwritten
-        // with an empty durable queue and the host can recover.
         let previousRecords = records
         let previouslyLoaded = hasLoaded
         records = []
@@ -264,27 +382,43 @@ actor FileDetectionQueue: DurableDetectionQueue {
             records = try JSONDecoder().decode([QueuedDetection].self, from: data)
             hasLoaded = true
         } catch {
-            // Do not set `hasLoaded` or overwrite the file. Retrying preserves
-            // the original bytes for diagnosis instead of silently losing data.
+            throw DurableDetectionQueueError.unreadableStoredDetections
+        }
+    }
+
+    private func loadDeadLettersIfNeeded() throws {
+        guard !hasLoadedDeadLetters else { return }
+        guard let data = try fileStore.data(at: deadLetterURL) else {
+            hasLoadedDeadLetters = true
+            return
+        }
+        do {
+            deadLetters = try JSONDecoder().decode([QueuedDetection].self, from: data)
+            hasLoadedDeadLetters = true
+        } catch {
             throw DurableDetectionQueueError.unreadableStoredDetections
         }
     }
 
     private func persist() throws {
-        // Atomic replacement avoids leaving a partially written JSON file if
-        // the process is interrupted during a write.
         try fileStore.createDirectory(at: fileURL.deletingLastPathComponent())
         let data = try JSONEncoder().encode(records)
         try fileStore.writeAtomically(data, to: fileURL)
     }
 
-    private static func defaultFileURL(storageIdentifier: String) -> URL {
+    private func persistDeadLetters() throws {
+        try fileStore.createDirectory(at: deadLetterURL.deletingLastPathComponent())
+        let data = try JSONEncoder().encode(deadLetters)
+        try fileStore.writeAtomically(data, to: deadLetterURL)
+    }
+
+    private static func defaultFileURL(storageIdentifier: String, fileNamePrefix: String) -> URL {
         let baseURL = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? FileManager.default.temporaryDirectory
         return baseURL
             .appendingPathComponent("SelectBeaconSDK", isDirectory: true)
-            .appendingPathComponent("pending-detections-\(storageIdentifier).json")
+            .appendingPathComponent("\(fileNamePrefix)-\(storageIdentifier).json")
     }
 }

@@ -75,26 +75,6 @@ public struct SelectOpenBeaconWindow: Equatable, Sendable {
     public let observationCount: Int
     public let location: LocationFix?
 
-    public init(
-        uuid: UUID,
-        major: Int,
-        minor: Int,
-        bestRSSI: Int,
-        latestTimestamp: Date,
-        windowStartedAt: Date,
-        observationCount: Int,
-        location: LocationFix?
-    ) {
-        self.uuid = uuid
-        self.major = major
-        self.minor = minor
-        self.bestRSSI = bestRSSI
-        self.latestTimestamp = latestTimestamp
-        self.windowStartedAt = windowStartedAt
-        self.observationCount = observationCount
-        self.location = location
-    }
-
     init(_ summary: OpenWindowSummary) {
         uuid = summary.uuid
         major = summary.major

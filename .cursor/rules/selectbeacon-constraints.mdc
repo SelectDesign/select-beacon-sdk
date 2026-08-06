@@ -9,7 +9,7 @@ Read `docs/development-context.md` and `docs/decisions.md` before changing behav
 
 ## Must
 
-- Core Location iBeacon ranging only; never add CoreBluetooth scanning
+- Core Location iBeacon region monitoring + ranging; never add CoreBluetooth scanning
 - Single fleet UUID `76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911`
 - Identify beacons by UUID / major / minor only (no serial resolution in SDK)
 - Observe host location authorization; never request permission

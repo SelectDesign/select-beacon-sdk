@@ -5,10 +5,13 @@ enum HTTPIngestUploadError: Error, Equatable {
     case missingDeviceIdentifier
     case networkRequestFailed
     case invalidHTTPResponse
-    case unexpectedStatusCode(Int)
+    case rateLimited(retryAfter: TimeInterval?)
+    case unauthorized(statusCode: Int)
+    case clientError(statusCode: Int)
+    case serverError(statusCode: Int)
 }
 
-/// Posts a JSON:API `sdk_beacon` document to `/ingest/sdk/v1`.
+/// Posts `{ "detections": [ sdk_beacon… ] }` to `/ingest/sdk/v1/detections`.
 ///
 /// HTTP 200 acknowledges the entire posted batch (local queue IDs).
 @MainActor
@@ -19,17 +22,20 @@ final class HTTPIngestUploadTransport: UploadTransport {
     private let httpClient: HTTPDataLoading
     private let deviceIdentifier: DeviceIdentifying
     private let payloadEncoder: BeaconUploadPayloadEncoder
+    private let clock: Clock
 
     init(
         ingestURL: URL,
         httpClient: HTTPDataLoading = URLSessionHTTPDataLoader(),
         deviceIdentifier: DeviceIdentifying,
-        payloadEncoder: BeaconUploadPayloadEncoder = BeaconUploadPayloadEncoder()
+        payloadEncoder: BeaconUploadPayloadEncoder = BeaconUploadPayloadEncoder(),
+        clock: Clock = SystemClock()
     ) {
         self.ingestURL = ingestURL
         self.httpClient = httpClient
         self.deviceIdentifier = deviceIdentifier
         self.payloadEncoder = payloadEncoder
+        self.clock = clock
     }
 
     func upload(
@@ -55,7 +61,9 @@ final class HTTPIngestUploadTransport: UploadTransport {
         request.httpMethod = "POST"
         request.setValue(Self.jsonAPIContentType, forHTTPHeaderField: "Content-Type")
         request.setValue(Self.jsonAPIContentType, forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        if UploadAuthentication.isEnabled, !bearerToken.isEmpty {
+            request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = body
 
         let response: URLResponse
@@ -68,10 +76,22 @@ final class HTTPIngestUploadTransport: UploadTransport {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw HTTPIngestUploadError.invalidHTTPResponse
         }
-        guard httpResponse.statusCode == 200 else {
-            throw HTTPIngestUploadError.unexpectedStatusCode(httpResponse.statusCode)
-        }
 
-        return .accepted(acknowledgedIDs: detections.map(\.id))
+        switch HTTPIngestStatusClassifier.classify(
+            statusCode: httpResponse.statusCode,
+            retryAfterHeader: httpResponse.value(forHTTPHeaderField: "Retry-After"),
+            now: clock.now
+        ) {
+        case .success:
+            return .accepted(acknowledgedIDs: detections.map(\.id))
+        case .rateLimited(let retryAfter):
+            throw HTTPIngestUploadError.rateLimited(retryAfter: retryAfter)
+        case .unauthorized(let statusCode):
+            throw HTTPIngestUploadError.unauthorized(statusCode: statusCode)
+        case .clientError(let statusCode):
+            throw HTTPIngestUploadError.clientError(statusCode: statusCode)
+        case .serverError(let statusCode):
+            throw HTTPIngestUploadError.serverError(statusCode: statusCode)
+        }
     }
 }

@@ -1,9 +1,10 @@
 import Foundation
 
-/// Transmits durable queued reports using quiet debounce, max-age, and opportunistic triggers.
+/// Transmits durable queued reports (the forward half of store-and-forward).
 ///
-/// Enqueue readiness is owned by observation windows. This type only decides
-/// when to attempt network delivery.
+/// Capture enqueues first; this type only decides when to attempt network
+/// delivery under the connectivity-gated trigger set documented in
+/// `docs/architecture.md` §5b.
 @MainActor
 final class UploadCoordinator {
     private let configuration: SDKConfiguration
@@ -17,13 +18,15 @@ final class UploadCoordinator {
     private let clock: Clock
     private let diagnosticsReporter: DiagnosticsReporting
     private let deviceIdentifier: DeviceIdentifying
-    private let payloadEncoder: BeaconUploadPayloadEncoder
     private let onQueueAcknowledged: (@MainActor () async -> Void)?
 
     private var wantsRunning = false
     private var isForeground = true
     private var isFlushing = false
+    private var flushAgain = false
     private var currentBackoff: TimeInterval
+    /// When set, flushes wait until this instant (e.g. API `Retry-After`).
+    private var uploadPausedUntil: Date?
 
     /// Returned when the transport accepts a batch but acknowledges no queued IDs.
     struct NoOpUploadAcknowledgement: Error {}
@@ -40,7 +43,6 @@ final class UploadCoordinator {
         clock: Clock,
         diagnosticsReporter: DiagnosticsReporting = NoopDiagnosticsReporter(),
         deviceIdentifier: DeviceIdentifying = VendorDeviceIdentifier(),
-        payloadEncoder: BeaconUploadPayloadEncoder = BeaconUploadPayloadEncoder(),
         onQueueAcknowledged: (@MainActor () async -> Void)? = nil
     ) {
         self.configuration = configuration
@@ -54,7 +56,6 @@ final class UploadCoordinator {
         self.clock = clock
         self.diagnosticsReporter = diagnosticsReporter
         self.deviceIdentifier = deviceIdentifier
-        self.payloadEncoder = payloadEncoder
         self.onQueueAcknowledged = onQueueAcknowledged
         currentBackoff = configuration.uploadRetryBackoff
     }
@@ -71,7 +72,6 @@ final class UploadCoordinator {
             self.flushOpportunistically()
         }
         pathObserver.start()
-        // Resume max-age (and overdue zero-delay flush) for records already on disk.
         Task { @MainActor [weak self] in
             await self?.refreshMaxAgeSchedule()
         }
@@ -79,6 +79,8 @@ final class UploadCoordinator {
 
     func stop() {
         wantsRunning = false
+        uploadPausedUntil = nil
+        flushAgain = false
         quietDebounceScheduler.cancel()
         maxAgeScheduler.cancel()
         retryBackoffScheduler.cancel()
@@ -86,7 +88,6 @@ final class UploadCoordinator {
         pathObserver.onPathChanged = nil
     }
 
-    /// Tracks application activity for foreground-only quiet debounce.
     func setForeground(_ isForeground: Bool) {
         self.isForeground = isForeground
         if !isForeground {
@@ -94,7 +95,6 @@ final class UploadCoordinator {
         }
     }
 
-    /// Resets the foreground quiet-debounce timer after any valid beacon sighting.
     func noteSightingActivity() {
         guard wantsRunning else { return }
         if isForeground {
@@ -102,34 +102,85 @@ final class UploadCoordinator {
         }
         Task { @MainActor [weak self] in
             await self?.refreshMaxAgeSchedule()
+            await self?.flushAfterWakeIfNeeded()
         }
     }
 
-    /// Refreshes the max-queue-age cap after durable enqueue / queue mutation.
     func noteQueueChanged() async {
         guard wantsRunning else { return }
         await refreshMaxAgeSchedule()
+        await flushAfterWakeIfNeeded()
     }
 
-    /// Immediate flush for lifecycle, connectivity return, and max-age fires.
+    /// Immediate flush for lifecycle, connectivity return, max-age, and cold-start.
     func flushOpportunistically() {
         guard wantsRunning else { return }
+        if isFlushing {
+            flushAgain = true
+            return
+        }
         quietDebounceScheduler.cancel()
         Task { @MainActor [weak self] in
-            await self?.flushIfPossible()
+            await self?.flushIfPossible(maxBatches: nil)
+        }
+    }
+
+    /// Connectivity-gated flush after enqueue / background ranging activity.
+    ///
+    /// Background wakes attempt a single batch only so the wake window stays
+    /// short; the durable queue retains anything not uploaded. Foreground keeps
+    /// a full drain (same as other opportunistic triggers).
+    func flushAfterWakeIfNeeded() async {
+        guard wantsRunning else { return }
+        guard pathObserver.isSatisfied else { return }
+        guard uploadPausedUntil == nil || clock.now >= (uploadPausedUntil ?? .distantPast) else {
+            return
+        }
+        guard let queue = queueProvider() else { return }
+        do {
+            guard try await queue.oldestQueuedAt() != nil else { return }
+        } catch {
+            diagnosticsReporter.record(.durableQueueUnreadable, error: error)
+            return
+        }
+        if isForeground {
+            flushOpportunistically()
+        } else {
+            flushBounded(maxBatches: 1)
+        }
+    }
+
+    /// At most `maxBatches` POSTs — used for background region-wake flushes.
+    func flushBounded(maxBatches: Int = 1) {
+        guard wantsRunning else { return }
+        if isFlushing {
+            flushAgain = true
+            return
+        }
+        quietDebounceScheduler.cancel()
+        let limit = max(1, maxBatches)
+        Task { @MainActor [weak self] in
+            await self?.flushIfPossible(maxBatches: limit)
         }
     }
 
     private func scheduleQuietDebounce() {
+        guard uploadPausedUntil == nil || clock.now >= (uploadPausedUntil ?? .distantPast) else {
+            return
+        }
         quietDebounceScheduler.schedule(after: configuration.sendDebounce) { [weak self] in
             Task { @MainActor [weak self] in
-                await self?.flushIfPossible()
+                await self?.flushIfPossible(maxBatches: nil)
             }
         }
     }
 
     private func refreshMaxAgeSchedule() async {
         guard wantsRunning, let queue = queueProvider() else {
+            maxAgeScheduler.cancel()
+            return
+        }
+        if let uploadPausedUntil, clock.now < uploadPausedUntil {
             maxAgeScheduler.cancel()
             return
         }
@@ -148,16 +199,45 @@ final class UploadCoordinator {
         }
     }
 
-    private func flushIfPossible() async {
-        guard wantsRunning, !isFlushing else { return }
+    /// - Parameter maxBatches: `nil` drains until empty/offline/failure; otherwise
+    ///   stops after that many successful or attempted batch uploads.
+    private func flushIfPossible(maxBatches: Int?) async {
+        guard wantsRunning else { return }
+        if isFlushing {
+            flushAgain = true
+            return
+        }
+        if let uploadPausedUntil, clock.now < uploadPausedUntil {
+            let remaining = uploadPausedUntil.timeIntervalSince(clock.now)
+            scheduleRetry(after: remaining, advanceExponentialBackoff: false)
+            return
+        }
+        uploadPausedUntil = nil
         guard pathObserver.isSatisfied else { return }
         guard let queue = queueProvider() else { return }
 
         isFlushing = true
-        defer { isFlushing = false }
+        defer {
+            isFlushing = false
+            if flushAgain {
+                flushAgain = false
+                Task { @MainActor [weak self] in
+                    // A deferred re-flush from a concurrent trigger uses full drain.
+                    await self?.flushIfPossible(maxBatches: nil)
+                }
+            }
+        }
 
+        var batchesAttempted = 0
         do {
             while wantsRunning, pathObserver.isSatisfied {
+                if let maxBatches, batchesAttempted >= maxBatches {
+                    return
+                }
+                if let uploadPausedUntil, clock.now < uploadPausedUntil {
+                    return
+                }
+
                 let batch = try await queue.nextBatch(limit: configuration.uploadBatchLimit)
                 guard !batch.isEmpty else {
                     currentBackoff = configuration.uploadRetryBackoff
@@ -165,31 +245,38 @@ final class UploadCoordinator {
                     return
                 }
 
-                // Prove the confirmed wire body can be built (including deviceId)
-                // before asking auth/transport. Live HTTP still posts this later.
-                do {
-                    _ = try payloadEncoder.encode(batch, deviceId: deviceIdentifier.deviceId)
-                } catch {
-                    diagnosticsReporter.record(.deviceIdentifierUnavailable, error: error)
-                    scheduleRetryBackoff()
+                batchesAttempted += 1
+
+                // Transport owns encode; preflight only so FakeTransport tests
+                // still skip network when IDFV is missing (same diagnostic).
+                guard let deviceId = deviceIdentifier.deviceId, !deviceId.isEmpty else {
+                    diagnosticsReporter.record(
+                        .deviceIdentifierUnavailable,
+                        error: BeaconUploadPayloadEncoder.MissingDeviceIdentifier()
+                    )
+                    _ = await handleRetryableFailure(queue: queue, batch: batch)
                     return
                 }
 
-                let token = try await authProvider.validToken()
-                let response = try await transport.upload(detections: batch, bearerToken: token)
-                switch response {
-                case .accepted(let ids):
-                    // `nextBatch` is a non-destructive peek. Empty or unknown IDs
-                    // would leave the queue unchanged and spin this loop forever.
-                    let batchIDs = Set(batch.map(\.id))
-                    let removable = ids.filter { batchIDs.contains($0) }
-                    guard !removable.isEmpty else {
-                        throw NoOpUploadAcknowledgement()
+                do {
+                    let response = try await performUpload(batch: batch)
+                    switch response {
+                    case .accepted(let ids):
+                        let batchIDs = Set(batch.map(\.id))
+                        let removable = ids.filter { batchIDs.contains($0) }
+                        guard !removable.isEmpty else {
+                            throw NoOpUploadAcknowledgement()
+                        }
+                        try await queue.acknowledge(ids: removable)
+                        currentBackoff = configuration.uploadRetryBackoff
+                        await onQueueAcknowledged?()
+                        await refreshMaxAgeSchedule()
                     }
-                    try await queue.acknowledge(ids: removable)
-                    currentBackoff = configuration.uploadRetryBackoff
-                    await onQueueAcknowledged?()
-                    await refreshMaxAgeSchedule()
+                } catch {
+                    let shouldStop = await handleUploadError(error, queue: queue, batch: batch)
+                    if shouldStop {
+                        return
+                    }
                 }
             }
         } catch {
@@ -198,15 +285,106 @@ final class UploadCoordinator {
         }
     }
 
-    private func scheduleRetryBackoff() {
-        retryBackoffScheduler.schedule(after: currentBackoff) { [weak self] in
-            Task { @MainActor [weak self] in
-                await self?.flushIfPossible()
+    /// Obtains a token and uploads. While auth is paused, live installs use
+    /// `PausedAuthProvider` and the transport omits Bearer; the 401 refresh
+    /// path runs only when `UploadAuthentication.isEnabled` is true.
+    private func performUpload(batch: [QueuedDetection]) async throws -> UploadResponse {
+        let token = try await authProvider.validToken()
+        do {
+            return try await transport.upload(detections: batch, bearerToken: token)
+        } catch {
+            guard UploadAuthentication.isEnabled,
+                  case .unauthorizedRefresh = UploadFailurePolicy.policy(for: error) else {
+                throw error
+            }
+            authProvider.invalidateCachedToken()
+            let refreshed = try await authProvider.validToken()
+            return try await transport.upload(detections: batch, bearerToken: refreshed)
+        }
+    }
+
+    /// Returns `true` when the flush loop should stop (retry scheduled / paused).
+    private func handleUploadError(
+        _ error: Error,
+        queue: any DurableDetectionQueue,
+        batch: [QueuedDetection]
+    ) async -> Bool {
+        diagnosticsReporter.record(.uploadFailed, error: error)
+        switch UploadFailurePolicy.policy(for: error) {
+        case .deadLetterImmediately:
+            await deadLetter(batch: batch, queue: queue)
+            return false
+        case .unauthorizedRefresh:
+            return await handleRetryableFailure(queue: queue, batch: batch)
+        case .retryable(let backoff):
+            return await handleRetryableFailure(queue: queue, batch: batch, backoff: backoff)
+        }
+    }
+
+    /// Returns `true` when the flush loop should stop.
+    private func handleRetryableFailure(
+        queue: any DurableDetectionQueue,
+        batch: [QueuedDetection],
+        backoff: UploadFailurePolicy.RetryBackoffKind = .exponential
+    ) async -> Bool {
+        do {
+            try await queue.recordUploadAttempts(for: batch.map(\.id))
+            let refreshed = try await queue.nextBatch(limit: batch.count)
+            let maxAttempts = configuration.maxUploadAttempts
+            if refreshed.contains(where: { $0.uploadAttemptCount >= maxAttempts }) {
+                await deadLetter(batch: refreshed, queue: queue)
+                return false
+            }
+        } catch {
+            diagnosticsReporter.record(.durableQueueWriteFailed, error: error)
+        }
+
+        switch backoff {
+        case .exponential:
+            scheduleRetryBackoff()
+        case .rateLimited(let retryAfter):
+            if let retryAfter {
+                scheduleRetry(after: retryAfter, advanceExponentialBackoff: false)
+            } else {
+                scheduleRetryBackoff()
             }
         }
-        currentBackoff = min(
-            currentBackoff * 2,
-            configuration.uploadRetryBackoffMax
-        )
+        return true
+    }
+
+    private func deadLetter(batch: [QueuedDetection], queue: any DurableDetectionQueue) async {
+        do {
+            try await queue.deadLetter(ids: batch.map(\.id))
+            diagnosticsReporter.record(.uploadDeadLettered)
+            await onQueueAcknowledged?()
+            await refreshMaxAgeSchedule()
+        } catch {
+            diagnosticsReporter.record(.durableQueueWriteFailed, error: error)
+            scheduleRetryBackoff()
+        }
+    }
+
+    private func scheduleRetryBackoff() {
+        scheduleRetry(after: currentBackoff, advanceExponentialBackoff: true)
+    }
+
+    private func scheduleRetry(after delay: TimeInterval, advanceExponentialBackoff: Bool) {
+        let wait = Swift.max(0, delay)
+        uploadPausedUntil = clock.now.addingTimeInterval(wait)
+        quietDebounceScheduler.cancel()
+        maxAgeScheduler.cancel()
+        retryBackoffScheduler.schedule(after: wait) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.uploadPausedUntil = nil
+                await self.flushIfPossible(maxBatches: nil)
+            }
+        }
+        if advanceExponentialBackoff {
+            currentBackoff = min(
+                currentBackoff * 2,
+                configuration.uploadRetryBackoffMax
+            )
+        }
     }
 }

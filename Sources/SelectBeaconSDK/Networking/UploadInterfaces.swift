@@ -4,6 +4,12 @@ import Foundation
 @MainActor
 protocol AuthProvider {
     func validToken() async throws -> String
+    /// Clears any cached token so the next `validToken()` fetches a new one.
+    func invalidateCachedToken()
+}
+
+extension AuthProvider {
+    func invalidateCachedToken() {}
 }
 
 enum UploadResponse: Equatable, Sendable {
@@ -58,4 +64,3 @@ struct DebugAutoAckUploadTransport: UploadTransport {
         return .accepted(acknowledgedIDs: detections.map(\.id))
     }
 }
-

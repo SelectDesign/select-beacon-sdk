@@ -219,7 +219,7 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
         )
         let detection = QueuedDetectionFixtures.make(latestTimestamp: initialDate)
 
-        try await queue.enqueue(detection)
+        try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
         let token = try await provider.validToken()
 
         let persistedQueue = try XCTUnwrap(fileStore.files[fileURL])

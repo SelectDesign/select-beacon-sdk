@@ -23,7 +23,8 @@ Do not create a production release until all applicable gates are complete:
 
 - Replace `REPLACE_ME_PRODUCTION` with the confirmed production API endpoint.
 - Validate the Select token-broker endpoint and app-key provisioning process.
-- Confirm the backend's upload payload and acknowledgement contract.
+- Confirm the backend's upload payload and acknowledgement contract
+  (including dedupe on `idempotency-key` for at-least-once re-sends).
 - Validate the existing upload coordinator, token broker, and HTTP transport
   end-to-end against the production host.
 
@@ -53,7 +54,15 @@ approved Xcode installation before running iOS builds.
 
 ## 4. Run automated validation
 
-From the repository root:
+Pull requests targeting `main` run
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml): `swift package
+dump-package` plus `xcodebuild test -scheme SelectBeaconSDK-Package` on an
+available iPhone Simulator (UDID resolved at runtime). Confirm the first CI run
+on GitHub Actions finds a simulator; if the runner image has none, adjust the
+resolve step or install a platform runtime. Branch protection “required checks”
+are configured in GitHub settings, not in this repo.
+
+From the repository root (local parity):
 
 ```sh
 swift package dump-package
@@ -79,8 +88,10 @@ The simulator suite must pass before device testing. It validates:
 - Observation-window aggregation and presence-expiry rules
 - Location cache stamping (including nil location)
 - Queue persistence, rollback on failed writes, reload, and legacy migration
-- Debounced batch upload, offline retry, and opportunistic background flush
-- Lifecycle, permission, and temporary ranging-pause behavior
+- Debounced batch upload, offline retry, full-drain opportunistic flushes, and
+  bounded single-batch flush on background wake
+- Lifecycle, permission, region-monitoring + ranging engine behavior, and
+  temporary When-In-Use pause
 - The core SDK to Select-app adapter boundary
 
 ## 5. Run on-device smoke tests
@@ -105,10 +116,11 @@ On a physical iPhone and iPad, verify:
 5. Additional sightings inside an open window update aggregates without adding
    another queue record until the window closes.
 6. Pending records survive an app relaunch.
-7. With When-In-Use permission, ranging pauses in the background and resumes
+7. With When-In-Use permission, detection pauses in the background and resumes
    in the foreground.
 8. With Always permission and the host's location background mode enabled,
-   ranging continues in the background as expected.
+   region monitoring can wake the app and ranging bursts capture beacons as
+   documented (not continuous suspended ranging).
 9. Staging uses the intended explicit endpoint and does not share its queue
    namespace with production.
 

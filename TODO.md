@@ -18,8 +18,13 @@ limitation.
       production key + host).
 - [x] Confirm with VIP/backend that wire attributes match ingest
       (`uuid`, `major`, `minor`, `best-rssi-dbm`, `observations`, `lat`/`lng`,
-      `first-seen`, `last-seen`, `device-id`) and that whole-batch ack on
-      HTTP 200 is final.
+      `first-seen`, `last-seen`, `device-id`, `idempotency-key`) and that
+      whole-batch ack on HTTP 200 is final. Backend must dedupe on
+      `idempotency-key` (at-least-once delivery).
+- [ ] Re-enable ingest auth: set `UploadAuthentication.isEnabled = true` once
+      the token broker is ready (Bearer header + 401 refresh path).
+- [ ] VIP confirmation for background `URLSession` (Tier B) if system-completed
+      uploads while suspended are required beyond opportunistic wake flushes.
 
 ## On-device validation (blocks a trustworthy VIP drop)
 
@@ -28,8 +33,8 @@ limitation.
       auto-ack).
 - [ ] Physical iPad smoke for the same flow.
 - [ ] When-In-Use: ranging pauses in background and resumes in foreground.
-- [ ] Always + location background mode: background ranging behaves as
-      documented.
+- [ ] Always + location background mode: region-monitoring wakes start short
+      ranging bursts; enqueue works; background flush is at most one batch.
 - [ ] Relaunch with pending disk records still visible via
       `SelectBeaconAppSupport.pendingReports()`.
 - [ ] Staging vs production queue isolation (different `appKey` / base URL →
@@ -64,9 +69,10 @@ limitation.
 
 ## Hardening / polish (not required for first VIP package)
 
-- [ ] Add CI (GitHub Actions or VIP’s system) running
+- [x] Add CI (GitHub Actions) running
       `xcodebuild test -scheme SelectBeaconSDK-Package` on an iOS 17+ simulator
-      with full Xcode.
+      with full Xcode — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+      (PRs targeting `main`).
 - [ ] Add App Store Privacy Manifest (`.xcprivacy`) if required for the SDK’s
       APIs (location usage is host-declared; confirm with VIP’s App Store
       process).
@@ -88,8 +94,11 @@ limitation.
 
 - Observation-window aggregates and durable enqueue-on-close
 - JSON:API ingest attributes (`first-seen`, `last-seen`, `best-rssi-dbm`, …)
-- Staging live auth (`/ingest/auth/v1`) + HTTP ingest (`/ingest/sdk/v1`)
-- Upload coordinator (quiet debounce, max queue age, opportunistic flush, backoff)
+- Staging live auth (`/ingest/auth/v1`) + HTTP ingest (`/ingest/sdk/v1/detections`)
+- Upload coordinator (quiet debounce, max queue age, opportunistic full drain,
+  bounded single-batch background wake flush, backoff)
+- iBeacon region monitoring + ranging-on-wake (Always); When-In-Use remains
+  foreground-only; host `UIBackgroundModes` required for real wakes
 - Stop-finalize pending + Start gating semantics
 - Cleanup refactor: unused SPI event stream removed, restart-safe path monitor,
   stop-finalize durability, shared delayed-action scheduler, split lifecycle tests

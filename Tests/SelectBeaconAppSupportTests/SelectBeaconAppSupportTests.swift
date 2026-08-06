@@ -38,9 +38,22 @@ final class SelectBeaconAppSupportTests: XCTestCase {
     @MainActor
     final class InMemoryQueue: DurableDetectionQueue {
         private(set) var records: [QueuedDetection] = []
+        private(set) var deadLetters: [QueuedDetection] = []
+        var maxQueueSize: Int = SDKConfiguration.default.maxQueueSize
+        var maxRecordAge: TimeInterval = SDKConfiguration.default.maxRecordAge
 
-        func enqueue(_ detection: QueuedDetection) async throws {
+        func enqueue(_ detection: QueuedDetection, now: Date) async throws -> EnqueueResult {
+            var evicted = 0
+            let cutoff = now.addingTimeInterval(-maxRecordAge)
+            let beforeAge = records.count
+            records.removeAll { $0.queuedAt < cutoff }
+            evicted += beforeAge - records.count
+            while records.count >= maxQueueSize {
+                records.removeFirst()
+                evicted += 1
+            }
             records.append(detection)
+            return EnqueueResult(evictedCount: evicted)
         }
 
         func nextBatch(limit: Int) async throws -> [QueuedDetection] {
@@ -50,6 +63,25 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         func acknowledge(ids: [UUID]) async throws {
             let ids = Set(ids)
             records.removeAll { ids.contains($0.id) }
+        }
+
+        func recordUploadAttempts(for ids: [UUID]) async throws {
+            let idSet = Set(ids)
+            records = records.map { record in
+                guard idSet.contains(record.id) else { return record }
+                return record.withUploadAttemptCount(record.uploadAttemptCount + 1)
+            }
+        }
+
+        func deadLetter(ids: [UUID]) async throws {
+            let idSet = Set(ids)
+            let moving = records.filter { idSet.contains($0.id) }
+            records.removeAll { idSet.contains($0.id) }
+            deadLetters.append(contentsOf: moving)
+        }
+
+        func deadLetteredRecords() async throws -> [QueuedDetection] {
+            deadLetters
         }
 
         func clear() async throws {
@@ -100,13 +132,15 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         private var completionWaiter: CheckedContinuation<Void, Never>?
         private var writePermits: [CheckedContinuation<Void, Never>] = []
 
-        func enqueue(_ detection: QueuedDetection) async throws {
+        func enqueue(_ detection: QueuedDetection, now: Date) async throws -> EnqueueResult {
+            _ = now
             await withCheckedContinuation { permit in
                 writePermits.append(permit)
                 signalWriteStart()
             }
             records.append(detection)
             signalWriteCompletion()
+            return .none
         }
 
         func nextBatch(limit: Int) async throws -> [QueuedDetection] {
@@ -116,6 +150,23 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         func acknowledge(ids: [UUID]) async throws {
             let ids = Set(ids)
             records.removeAll { ids.contains($0.id) }
+        }
+
+        func recordUploadAttempts(for ids: [UUID]) async throws {
+            let idSet = Set(ids)
+            records = records.map { record in
+                guard idSet.contains(record.id) else { return record }
+                return record.withUploadAttemptCount(record.uploadAttemptCount + 1)
+            }
+        }
+
+        func deadLetter(ids: [UUID]) async throws {
+            let idSet = Set(ids)
+            records.removeAll { idSet.contains($0.id) }
+        }
+
+        func deadLetteredRecords() async throws -> [QueuedDetection] {
+            []
         }
 
         func clear() async throws {

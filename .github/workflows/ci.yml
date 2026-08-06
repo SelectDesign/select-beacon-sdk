@@ -1,0 +1,63 @@
+# Runs the SelectBeaconSDK package test suite on iOS Simulator.
+# Matches docs/releasing.md automated validation (full Xcode; not `swift test`).
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: SelectBeaconSDK-Package
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode
+        run: |
+          set -euo pipefail
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Dump package manifest
+        run: swift package dump-package > /dev/null
+
+      - name: Resolve iPhone Simulator UDID
+        id: sim
+        run: |
+          set -euo pipefail
+          # Prefer any available iPhone; avoid hardcoding name/OS (runner images churn).
+          UDID="$(
+            xcrun simctl list devices available \
+              | sed -n 's/.*iPhone[^(]*(\([A-F0-9-]\{36\}\)).*/\1/p' \
+              | head -n 1
+          )"
+          if [[ -z "${UDID}" ]]; then
+            echo "::error::No available iPhone simulator found on this runner."
+            echo "Available devices:"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Using simulator UDID=${UDID}"
+          xcrun simctl list devices available | grep "${UDID}" || true
+          echo "udid=${UDID}" >> "${GITHUB_OUTPUT}"
+
+      - name: Test SelectBeaconSDK-Package
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -scheme SelectBeaconSDK-Package \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath TestResults.xcresult
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: TestResults.xcresult
+          if-no-files-found: ignore

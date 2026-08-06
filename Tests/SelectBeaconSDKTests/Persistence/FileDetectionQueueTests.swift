@@ -49,16 +49,22 @@ final class FileDetectionQueueTests: XCTestCase {
     func testQueueSurvivesReloadAndAcknowledgesInOrder() async throws {
         let fileStore = MemoryFileStore()
         let fileURL = URL(fileURLWithPath: "/queue/pending.json")
-        let first = QueuedDetectionFixtures.make(latestTimestamp: .distantPast)
-        let second = QueuedDetectionFixtures.make(latestTimestamp: .now)
+        let first = QueuedDetectionFixtures.make(
+            latestTimestamp: Date(timeIntervalSince1970: 1_000),
+            queuedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let second = QueuedDetectionFixtures.make(
+            latestTimestamp: Date(timeIntervalSince1970: 2_000),
+            queuedAt: Date(timeIntervalSince1970: 2_000)
+        )
 
         let firstQueue = FileDetectionQueue(
             storageIdentifier: "test",
             fileStore: fileStore,
             fileURL: fileURL
         )
-        try await firstQueue.enqueue(first)
-        try await firstQueue.enqueue(second)
+        try await firstQueue.enqueue(first, now: Date(timeIntervalSince1970: 3_000))
+        try await firstQueue.enqueue(second, now: Date(timeIntervalSince1970: 3_000))
 
         let reloadedQueue = FileDetectionQueue(
             storageIdentifier: "test",
@@ -82,7 +88,7 @@ final class FileDetectionQueueTests: XCTestCase {
         let detection = QueuedDetectionFixtures.make()
 
         do {
-            try await queue.enqueue(detection)
+            try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
             XCTFail("Expected queue persistence to fail")
         } catch {
             XCTAssertTrue(true)
@@ -100,7 +106,7 @@ final class FileDetectionQueueTests: XCTestCase {
             fileURL: fileURL
         )
         let detection = QueuedDetectionFixtures.make()
-        try await queue.enqueue(detection)
+        try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
 
         do {
             try await queue.acknowledge(ids: [detection.id])
@@ -135,7 +141,7 @@ final class FileDetectionQueueTests: XCTestCase {
         }
 
         do {
-            try await queue.enqueue(detection)
+            try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
             XCTFail("Expected malformed stored queue to fail")
         } catch let error as DurableDetectionQueueError {
             XCTAssertEqual(error, .unreadableStoredDetections)
@@ -200,7 +206,7 @@ final class FileDetectionQueueTests: XCTestCase {
             fileStore: fileStore,
             fileURL: fileURL
         )
-        try await firstQueue.enqueue(detection)
+        try await firstQueue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
 
         let reloaded = FileDetectionQueue(
             storageIdentifier: "test",
@@ -241,7 +247,7 @@ final class FileDetectionQueueTests: XCTestCase {
             fileURL: URL(fileURLWithPath: "/queue/\(staging.queueStorageIdentifier).json")
         )
 
-        try await productionQueue.enqueue(QueuedDetectionFixtures.make())
+        try await productionQueue.enqueue(QueuedDetectionFixtures.make(), now: Date(timeIntervalSince1970: 1_000_000))
 
         let productionBatch = try await productionQueue.nextBatch(limit: 10)
         let stagingBatch = try await stagingQueue.nextBatch(limit: 10)
@@ -257,7 +263,7 @@ final class FileDetectionQueueTests: XCTestCase {
             fileStore: fileStore,
             fileURL: fileURL
         )
-        try await queue.enqueue(QueuedDetectionFixtures.make())
+        try await queue.enqueue(QueuedDetectionFixtures.make(), now: Date(timeIntervalSince1970: 1_000_000))
         try await queue.clear()
 
         let emptied = try await queue.nextBatch(limit: 10)
@@ -293,6 +299,92 @@ final class FileDetectionQueueTests: XCTestCase {
         )
         let reloadedBatch = try await reloaded.nextBatch(limit: 10)
         XCTAssertTrue(reloadedBatch.isEmpty)
+    }
+
+    func testEnqueueBeyondMaxQueueSizeEvictsOldest() async throws {
+        let fileStore = MemoryFileStore()
+        let fileURL = URL(fileURLWithPath: "/queue/bounded.json")
+        let queue = FileDetectionQueue(
+            storageIdentifier: "bounded",
+            fileStore: fileStore,
+            fileURL: fileURL,
+            maxQueueSize: 2,
+            maxRecordAge: 604_800
+        )
+        let first = QueuedDetectionFixtures.make(minor: 1, queuedAt: Date(timeIntervalSince1970: 1))
+        let second = QueuedDetectionFixtures.make(minor: 2, queuedAt: Date(timeIntervalSince1970: 2))
+        let third = QueuedDetectionFixtures.make(minor: 3, queuedAt: Date(timeIntervalSince1970: 3))
+        let now = Date(timeIntervalSince1970: 10)
+
+        let firstResult = try await queue.enqueue(first, now: now)
+        let secondResult = try await queue.enqueue(second, now: now)
+        XCTAssertEqual(firstResult.evictedCount, 0)
+        XCTAssertEqual(secondResult.evictedCount, 0)
+        let result = try await queue.enqueue(third, now: now)
+        XCTAssertEqual(result.evictedCount, 1)
+
+        let batch = try await queue.nextBatch(limit: 10)
+        XCTAssertEqual(batch.map(\.minor), [2, 3])
+    }
+
+    func testEnqueueDropsRecordsOlderThanMaxRecordAge() async throws {
+        let fileStore = MemoryFileStore()
+        let fileURL = URL(fileURLWithPath: "/queue/aged.json")
+        let queue = FileDetectionQueue(
+            storageIdentifier: "aged",
+            fileStore: fileStore,
+            fileURL: fileURL,
+            maxQueueSize: 50,
+            maxRecordAge: 100
+        )
+        let old = QueuedDetectionFixtures.make(minor: 1, queuedAt: Date(timeIntervalSince1970: 1))
+        let recent = QueuedDetectionFixtures.make(minor: 2, queuedAt: Date(timeIntervalSince1970: 150))
+        _ = try await queue.enqueue(old, now: Date(timeIntervalSince1970: 50))
+        let result = try await queue.enqueue(recent, now: Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(result.evictedCount, 1)
+        let batch = try await queue.nextBatch(limit: 10)
+        XCTAssertEqual(batch.map(\.minor), [2])
+    }
+
+    func testQueueNeverExceedsMaxSizeAcrossManyEnqueues() async throws {
+        let fileStore = MemoryFileStore()
+        let queue = FileDetectionQueue(
+            storageIdentifier: "cap",
+            fileStore: fileStore,
+            fileURL: URL(fileURLWithPath: "/queue/cap.json"),
+            maxQueueSize: 3,
+            maxRecordAge: 604_800
+        )
+        let now = Date(timeIntervalSince1970: 1_000)
+        for minor in 1...20 {
+            _ = try await queue.enqueue(
+                QueuedDetectionFixtures.make(minor: minor, queuedAt: now),
+                now: now
+            )
+            let count = try await queue.nextBatch(limit: 100).count
+            XCTAssertLessThanOrEqual(count, 3)
+        }
+        let final = try await queue.nextBatch(limit: 10)
+        XCTAssertEqual(final.map(\.minor), [18, 19, 20])
+    }
+
+    func testDeadLetterRetainsMovedRecords() async throws {
+        let fileStore = MemoryFileStore()
+        let fileURL = URL(fileURLWithPath: "/queue/pending-dl.json")
+        let deadLetterURL = URL(fileURLWithPath: "/queue/dead-dl.json")
+        let queue = FileDetectionQueue(
+            storageIdentifier: "dl",
+            fileStore: fileStore,
+            fileURL: fileURL,
+            deadLetterURL: deadLetterURL
+        )
+        let detection = QueuedDetectionFixtures.make(minor: 9)
+        _ = try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1))
+        try await queue.deadLetter(ids: [detection.id])
+        let pending = try await queue.nextBatch(limit: 10)
+        XCTAssertTrue(pending.isEmpty)
+        let dead = try await queue.deadLetteredRecords()
+        XCTAssertEqual(dead.map(\.minor), [9])
     }
 }
 

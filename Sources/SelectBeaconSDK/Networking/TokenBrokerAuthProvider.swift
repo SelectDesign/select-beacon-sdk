@@ -101,6 +101,12 @@ final class TokenBrokerAuthProvider: AuthProvider {
         }
     }
 
+    func invalidateCachedToken() {
+        cachedToken = nil
+        refreshTask?.cancel()
+        refreshTask = nil
+    }
+
     private func isUsable(_ token: CachedToken) -> Bool {
         token.expiresAt.timeIntervalSince(clock.now) > refreshSafetyMargin
     }

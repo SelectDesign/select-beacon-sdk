@@ -158,6 +158,22 @@ final class SelectBeaconSDKConfigurationTests: XCTestCase {
         XCTAssertEqual(fixture.sdk.operationalStatus, .ranging)
     }
 
+    func testAlwaysBackgroundKeepsEngineStartedAndSyncsApplicationActive() {
+        let fixture = SDKTestFixture.makeSDK(authorization: .always, isActive: true)
+
+        fixture.sdk.start()
+        XCTAssertEqual(fixture.engine.startedUUIDs.count, 1)
+        XCTAssertFalse(fixture.engine.applicationActiveValues.isEmpty)
+        XCTAssertEqual(fixture.engine.applicationActiveValues.last, true)
+        let stopCountAfterStart = fixture.engine.stopCount
+
+        fixture.lifecycle.setActive(false)
+
+        XCTAssertEqual(fixture.engine.stopCount, stopCountAfterStart)
+        XCTAssertEqual(fixture.engine.applicationActiveValues.last, false)
+        XCTAssertEqual(fixture.sdk.operationalStatus, .ranging)
+    }
+
     func testNotDeterminedIsQuietUntilHostGrantsAuthorization() {
         let fixture = SDKTestFixture.makeSDK(authorization: .notDetermined)
 

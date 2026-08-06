@@ -3,44 +3,26 @@ import XCTest
 
 @MainActor
 final class UploadCoordinatorTests: XCTestCase {
-    final class FakeQueue: DurableDetectionQueue, @unchecked Sendable {
-        private(set) var records: [QueuedDetection]
-        private(set) var acknowledgedIDs: [[UUID]] = []
-
-        init(records: [QueuedDetection] = []) {
-            self.records = records
-        }
-
-        func enqueue(_ detection: QueuedDetection) async throws {
-            records.append(detection)
-        }
-
-        func nextBatch(limit: Int) async throws -> [QueuedDetection] {
-            Array(records.prefix(limit))
-        }
-
-        func acknowledge(ids: [UUID]) async throws {
-            acknowledgedIDs.append(ids)
-            let ids = Set(ids)
-            records.removeAll { ids.contains($0.id) }
-        }
-
-        func clear() async throws {
-            records.removeAll()
-        }
-    }
-
     final class FakeAuthProvider: AuthProvider {
         private(set) var tokenCallCount = 0
+        private(set) var invalidateCount = 0
         var token = "batch-token"
         var error: Error?
+        var errorOnCalls: Set<Int> = []
 
         func validToken() async throws -> String {
             tokenCallCount += 1
+            if errorOnCalls.contains(tokenCallCount) {
+                throw error ?? TokenBrokerAuthError.networkRequestFailed
+            }
             if let error {
                 throw error
             }
             return token
+        }
+
+        func invalidateCachedToken() {
+            invalidateCount += 1
         }
     }
 
@@ -50,6 +32,7 @@ final class UploadCoordinatorTests: XCTestCase {
         private(set) var uploads: [[QueuedDetection]] = []
         private(set) var tokens: [String] = []
         var shouldFail = false
+        var statusErrors: [HTTPIngestUploadError] = []
         var acknowledgeAll = true
 
         func upload(
@@ -58,82 +41,14 @@ final class UploadCoordinatorTests: XCTestCase {
         ) async throws -> UploadResponse {
             uploads.append(detections)
             tokens.append(bearerToken)
+            if !statusErrors.isEmpty {
+                throw statusErrors.removeFirst()
+            }
             if shouldFail {
                 throw UploadError()
             }
             let ids = acknowledgeAll ? detections.map(\.id) : []
             return .accepted(acknowledgedIDs: ids)
-        }
-    }
-
-    final class FakePathObserver: NetworkPathObserving {
-        var isSatisfied: Bool
-        var onPathChanged: ((Bool) -> Void)?
-        private(set) var startCount = 0
-        private(set) var stopCount = 0
-
-        init(isSatisfied: Bool = true) {
-            self.isSatisfied = isSatisfied
-        }
-
-        func start() {
-            startCount += 1
-        }
-
-        func stop() {
-            stopCount += 1
-        }
-
-        func setSatisfied(_ satisfied: Bool) {
-            isSatisfied = satisfied
-            onPathChanged?(satisfied)
-        }
-    }
-
-    @MainActor
-    final class ManualScheduler: DelayedActionScheduling {
-        private(set) var scheduledDelays: [TimeInterval] = []
-        private var action: (@MainActor () -> Void)?
-
-        var hasPendingAction: Bool { action != nil }
-
-        func schedule(after delay: TimeInterval, action: @escaping @MainActor () -> Void) {
-            scheduledDelays.append(delay)
-            self.action = action
-        }
-
-        func cancel() {
-            action = nil
-        }
-
-        func fire() {
-            let action = action
-            self.action = nil
-            action?()
-        }
-    }
-
-    final class FakeDiagnostics: DiagnosticsReporting {
-        private(set) var events: [DiagnosticEvent] = []
-
-        func record(_ event: DiagnosticEvent, error: Error) {
-            events.append(event)
-        }
-    }
-
-    final class FakeDeviceIdentifier: DeviceIdentifying {
-        var deviceId: String?
-
-        init(deviceId: String? = "test-device-id") {
-            self.deviceId = deviceId
-        }
-    }
-
-    final class MutableClock: Clock {
-        var now: Date
-
-        init(now: Date) {
-            self.now = now
         }
     }
 
@@ -145,15 +60,15 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     private func makeCoordinator(
-        queue: FakeQueue,
+        queue: InMemoryQueue,
         auth: FakeAuthProvider = FakeAuthProvider(),
         transport: FakeTransport = FakeTransport(),
-        path: FakePathObserver = FakePathObserver(),
-        quiet: ManualScheduler = ManualScheduler(),
-        maxAge: ManualScheduler = ManualScheduler(),
-        retry: ManualScheduler = ManualScheduler(),
+        path: FakeNetworkPathObserver = FakeNetworkPathObserver(),
+        quiet: ManualDelayedActionScheduler = ManualDelayedActionScheduler(),
+        maxAge: ManualDelayedActionScheduler = ManualDelayedActionScheduler(),
+        retry: ManualDelayedActionScheduler = ManualDelayedActionScheduler(),
         clock: MutableClock = MutableClock(now: Date(timeIntervalSince1970: 1_000_000)),
-        diagnostics: FakeDiagnostics = FakeDiagnostics(),
+        diagnostics: FakeDiagnosticsReporter = FakeDiagnosticsReporter(),
         deviceIdentifier: FakeDeviceIdentifier = FakeDeviceIdentifier(),
         configuration: SDKConfiguration = .default,
         onQueueAcknowledged: (@MainActor () async -> Void)? = nil
@@ -161,12 +76,12 @@ final class UploadCoordinatorTests: XCTestCase {
         UploadCoordinator,
         FakeAuthProvider,
         FakeTransport,
-        FakePathObserver,
-        ManualScheduler,
-        ManualScheduler,
-        ManualScheduler,
+        FakeNetworkPathObserver,
+        ManualDelayedActionScheduler,
+        ManualDelayedActionScheduler,
+        ManualDelayedActionScheduler,
         MutableClock,
-        FakeDiagnostics
+        FakeDiagnosticsReporter
     ) {
         let coordinator = UploadCoordinator(
             configuration: configuration,
@@ -186,7 +101,7 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     private func waitForFlush(
-        queue: FakeQueue,
+        queue: InMemoryQueue,
         timeoutNanoseconds: UInt64 = 1_000_000_000,
         file: StaticString = #filePath,
         line: UInt = #line
@@ -208,7 +123,7 @@ final class UploadCoordinatorTests: XCTestCase {
 
     private func waitForSchedules(
         _ count: Int,
-        scheduler: ManualScheduler,
+        scheduler: ManualDelayedActionScheduler,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async {
@@ -246,7 +161,7 @@ final class UploadCoordinatorTests: XCTestCase {
     func testQuietDebounceFlushesBatchWithOneToken() async {
         let first = makeDetection(minor: 1)
         let second = makeDetection(minor: 2)
-        let queue = FakeQueue(records: [first, second])
+        let queue = InMemoryQueue(records: [first, second])
         let (coordinator, auth, transport, _, quiet, _, _, _, _) = makeCoordinator(queue: queue)
 
         coordinator.start()
@@ -265,7 +180,7 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testSightingActivityResetsQuietDebounce() {
-        let queue = FakeQueue(records: [makeDetection()])
+        let queue = InMemoryQueue(records: [makeDetection()])
         let (coordinator, _, _, _, quiet, _, _, _, _) = makeCoordinator(queue: queue)
 
         coordinator.start()
@@ -284,7 +199,7 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testBackgroundSightingDoesNotScheduleQuietDebounce() {
-        let queue = FakeQueue(records: [makeDetection()])
+        let queue = InMemoryQueue(records: [makeDetection()])
         let (coordinator, _, _, _, quiet, _, _, _, _) = makeCoordinator(queue: queue)
 
         coordinator.start()
@@ -296,7 +211,7 @@ final class UploadCoordinatorTests: XCTestCase {
 
     func testQueueChangedSchedulesMaxAgeFromOldestQueuedAt() async {
         let queuedAt = t0
-        let queue = FakeQueue(records: [makeDetection(queuedAt: queuedAt)])
+        let queue = InMemoryQueue(records: [makeDetection(queuedAt: queuedAt)])
         let clock = MutableClock(now: t0.addingTimeInterval(100))
         let (coordinator, _, _, _, _, maxAge, _, _, _) = makeCoordinator(
             queue: queue,
@@ -311,7 +226,7 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testStartRestoresMaxAgeScheduleForExistingBacklog() async {
-        let queue = FakeQueue(records: [makeDetection(queuedAt: t0)])
+        let queue = InMemoryQueue(records: [makeDetection(queuedAt: t0)])
         let clock = MutableClock(now: t0.addingTimeInterval(100))
         let (coordinator, _, _, _, _, maxAge, _, _, _) = makeCoordinator(
             queue: queue,
@@ -325,7 +240,7 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testMaxQueueAgeForcesFlushWhileNeverQuiet() async {
-        let queue = FakeQueue(records: [makeDetection(queuedAt: t0)])
+        let queue = InMemoryQueue(records: [makeDetection(queuedAt: t0)])
         let clock = MutableClock(now: t0)
         let (coordinator, auth, transport, _, quiet, maxAge, _, _, _) = makeCoordinator(
             queue: queue,
@@ -354,7 +269,7 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testOpportunisticFlushOnBackgroundAndForeground() async {
-        let queue = FakeQueue(records: [makeDetection(minor: 7)])
+        let queue = InMemoryQueue(records: [makeDetection(minor: 7)])
         let (coordinator, auth, transport, _, quiet, _, _, _, _) = makeCoordinator(queue: queue)
 
         coordinator.start()
@@ -370,7 +285,7 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(auth.tokenCallCount, 1)
         XCTAssertEqual(transport.uploads.first?.map(\.minor), [7])
 
-        let queue2 = FakeQueue(records: [makeDetection(minor: 8)])
+        let queue2 = InMemoryQueue(records: [makeDetection(minor: 8)])
         let (coordinator2, auth2, transport2, _, _, _, _, _, _) = makeCoordinator(queue: queue2)
         coordinator2.start()
         coordinator2.setForeground(false)
@@ -382,8 +297,8 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testOfflineTriggerDoesNotSendOrScheduleBackoff() async {
-        let queue = FakeQueue(records: [makeDetection()])
-        let path = FakePathObserver(isSatisfied: false)
+        let queue = InMemoryQueue(records: [makeDetection()])
+        let path = FakeNetworkPathObserver(isSatisfied: false)
         let (coordinator, auth, transport, _, quiet, _, retry, _, _) = makeCoordinator(
             queue: queue,
             path: path
@@ -403,8 +318,8 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testConnectivityReturnFlushesImmediately() async {
-        let queue = FakeQueue(records: [makeDetection(minor: 3)])
-        let path = FakePathObserver(isSatisfied: false)
+        let queue = InMemoryQueue(records: [makeDetection(minor: 3)])
+        let path = FakeNetworkPathObserver(isSatisfied: false)
         let (coordinator, auth, transport, _, _, _, _, _, _) = makeCoordinator(
             queue: queue,
             path: path
@@ -419,8 +334,8 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testStopStartRearmsPathObservationAndConnectivityFlush() async {
-        let queue = FakeQueue(records: [makeDetection(minor: 4)])
-        let path = FakePathObserver(isSatisfied: false)
+        let queue = InMemoryQueue(records: [makeDetection(minor: 4)])
+        let path = FakeNetworkPathObserver(isSatisfied: false)
         let (coordinator, _, transport, _, _, _, _, _, _) = makeCoordinator(
             queue: queue,
             path: path
@@ -438,10 +353,10 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testFailedUploadRetainsQueueAndReportsDiagnostics() async {
-        let queue = FakeQueue(records: [makeDetection()])
+        let queue = InMemoryQueue(records: [makeDetection()])
         let transport = FakeTransport()
         transport.shouldFail = true
-        let diagnostics = FakeDiagnostics()
+        let diagnostics = FakeDiagnosticsReporter()
         let (coordinator, _, _, _, _, _, retry, _, _) = makeCoordinator(
             queue: queue,
             transport: transport,
@@ -458,11 +373,54 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
     }
 
+    func testRateLimitedUploadHonorsRetryAfterWithoutAdvancingBackoff() async {
+        let queue = InMemoryQueue(records: [makeDetection()])
+        let transport = FakeTransport()
+        transport.statusErrors = [.rateLimited(retryAfter: 90)]
+        let retry = ManualDelayedActionScheduler()
+        let quiet = ManualDelayedActionScheduler()
+        let (coordinator, _, _, _, _, _, _, clock, diagnostics) = makeCoordinator(
+            queue: queue,
+            transport: transport,
+            quiet: quiet,
+            retry: retry
+        )
+
+        coordinator.start()
+        coordinator.setForeground(true)
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+
+        XCTAssertEqual(queue.records.count, 1)
+        XCTAssertEqual(diagnostics.events, [.uploadFailed])
+        XCTAssertEqual(retry.scheduledDelays, [90])
+        XCTAssertEqual(transport.uploads.count, 1)
+
+        // Opportunistic / quiet triggers must not bypass the pause.
+        let schedulesAfterRateLimit = retry.scheduledDelays.count
+        coordinator.flushOpportunistically()
+        await waitForSchedules(schedulesAfterRateLimit + 1, scheduler: retry)
+        coordinator.noteSightingActivity()
+        XCTAssertFalse(quiet.hasPendingAction)
+        XCTAssertEqual(transport.uploads.count, 1)
+        XCTAssertEqual(retry.scheduledDelays.last, 90)
+
+        // After Retry-After elapses, exponential backoff stays at the initial 15s on a later generic failure.
+        let schedulesBeforeResume = retry.scheduledDelays.count
+        clock.now = clock.now.addingTimeInterval(90)
+        transport.statusErrors = []
+        transport.shouldFail = true
+        retry.fire()
+        await waitForSchedules(schedulesBeforeResume + 1, scheduler: retry)
+        XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
+        XCTAssertEqual(transport.uploads.count, 2)
+    }
+
     func testRetryBackoffDoublesAndCapsAtMaximum() async {
-        let queue = FakeQueue(records: [makeDetection()])
+        let queue = InMemoryQueue(records: [makeDetection()])
         let transport = FakeTransport()
         transport.shouldFail = true
-        let retry = ManualScheduler()
+        let retry = ManualDelayedActionScheduler()
         let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
             queue: queue,
             transport: transport,
@@ -484,7 +442,7 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testNoteQueueChangedDoesNotScheduleQuietDebounce() async {
-        let queue = FakeQueue(records: [makeDetection()])
+        let queue = InMemoryQueue(records: [makeDetection()])
         let (coordinator, _, _, _, quiet, maxAge, _, _, _) = makeCoordinator(queue: queue)
 
         coordinator.start()
@@ -496,17 +454,17 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testAcknowledgeInvokesQueueAcknowledgedCallback() async {
-        let queue = FakeQueue(records: [makeDetection(minor: 9)])
+        let queue = InMemoryQueue(records: [makeDetection(minor: 9)])
         var ackCount = 0
         let coordinator = UploadCoordinator(
             configuration: .default,
             queueProvider: { queue },
             authProvider: FakeAuthProvider(),
             transport: FakeTransport(),
-            pathObserver: FakePathObserver(),
-            quietDebounceScheduler: ManualScheduler(),
-            maxAgeScheduler: ManualScheduler(),
-            retryBackoffScheduler: ManualScheduler(),
+            pathObserver: FakeNetworkPathObserver(),
+            quietDebounceScheduler: ManualDelayedActionScheduler(),
+            maxAgeScheduler: ManualDelayedActionScheduler(),
+            retryBackoffScheduler: ManualDelayedActionScheduler(),
             clock: MutableClock(now: t0),
             deviceIdentifier: FakeDeviceIdentifier(),
             onQueueAcknowledged: { ackCount += 1 }
@@ -521,11 +479,11 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testEmptyAcknowledgementStopsFlushWithoutSpinning() async {
-        let queue = FakeQueue(records: [makeDetection(minor: 11)])
+        let queue = InMemoryQueue(records: [makeDetection(minor: 11)])
         let transport = FakeTransport()
         transport.acknowledgeAll = false
-        let retry = ManualScheduler()
-        let diagnostics = FakeDiagnostics()
+        let retry = ManualDelayedActionScheduler()
+        let diagnostics = FakeDiagnosticsReporter()
         var ackCount = 0
         let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
             queue: queue,
@@ -548,24 +506,11 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testMultiBatchFlushInvokesAcknowledgementCallbackPerBatch() async {
-        let queue = FakeQueue(records: [
+        let queue = InMemoryQueue(records: [
             makeDetection(minor: 1),
             makeDetection(minor: 2),
         ])
-        let defaults = SDKConfiguration.default
-        let configuration = SDKConfiguration(
-            monitoredUUIDs: defaults.monitoredUUIDs,
-            windowDuration: defaults.windowDuration,
-            absenceTimeout: defaults.absenceTimeout,
-            sendDebounce: defaults.sendDebounce,
-            maxQueueAge: defaults.maxQueueAge,
-            uploadBatchLimit: 1,
-            uploadRetryBackoff: defaults.uploadRetryBackoff,
-            uploadRetryBackoffMax: defaults.uploadRetryBackoffMax,
-            locationAccuracy: defaults.locationAccuracy,
-            locationDistanceFilterMeters: defaults.locationDistanceFilterMeters,
-            useSignificantChangeBaseline: defaults.useSignificantChangeBaseline
-        )
+        let configuration = SDKConfiguration.default.with(uploadBatchLimit: 1)
         var ackCount = 0
         let (coordinator, _, transport, _, _, _, _, _, _) = makeCoordinator(
             queue: queue,
@@ -584,10 +529,10 @@ final class UploadCoordinatorTests: XCTestCase {
     }
 
     func testMissingDeviceIdentifierSkipsUploadAndSchedulesRetry() async {
-        let queue = FakeQueue(records: [makeDetection(minor: 5)])
+        let queue = InMemoryQueue(records: [makeDetection(minor: 5)])
         let transport = FakeTransport()
-        let retry = ManualScheduler()
-        let diagnostics = FakeDiagnostics()
+        let retry = ManualDelayedActionScheduler()
+        let diagnostics = FakeDiagnosticsReporter()
         let (coordinator, auth, _, _, _, _, _, _, _) = makeCoordinator(
             queue: queue,
             transport: transport,
@@ -605,6 +550,242 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(auth.tokenCallCount, 0)
         XCTAssertEqual(queue.records.count, 1)
         XCTAssertEqual(diagnostics.events, [.deviceIdentifierUnavailable])
+        XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
+    }
+
+    func testClientErrorDeadLettersAndAdvancesFIFO() async {
+        let poison = makeDetection(minor: 1)
+        let healthy = makeDetection(minor: 2)
+        let queue = InMemoryQueue(records: [poison, healthy])
+        let transport = FakeTransport()
+        transport.statusErrors = [.clientError(statusCode: 400)]
+        let diagnostics = FakeDiagnosticsReporter()
+        let configuration = SDKConfiguration.default.with(uploadBatchLimit: 1)
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            transport: transport,
+            diagnostics: diagnostics,
+            configuration: configuration
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForFlush(queue: queue)
+
+        XCTAssertEqual(queue.deadLetters.map(\.minor), [1])
+        XCTAssertTrue(queue.records.isEmpty)
+        XCTAssertEqual(transport.uploads.count, 2)
+        XCTAssertTrue(diagnostics.events.contains(.uploadDeadLettered))
+    }
+
+    func testServerErrorRetriesUntilMaxAttemptsThenDeadLetters() async {
+        let configuration = SDKConfiguration.default.with(maxUploadAttempts: 2)
+        let queue = InMemoryQueue(records: [makeDetection(minor: 3)])
+        let transport = FakeTransport()
+        transport.statusErrors = [
+            .serverError(statusCode: 500),
+            .serverError(statusCode: 500),
+        ]
+        let retry = ManualDelayedActionScheduler()
+        let diagnostics = FakeDiagnosticsReporter()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            transport: transport,
+            retry: retry,
+            diagnostics: diagnostics,
+            configuration: configuration
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+        XCTAssertEqual(queue.records.first?.uploadAttemptCount, 1)
+        XCTAssertTrue(queue.deadLetters.isEmpty)
+
+        retry.fire()
+        await waitUntil("dead-lettered after max attempts") {
+            !queue.deadLetters.isEmpty
+        }
+        XCTAssertTrue(queue.records.isEmpty)
+        XCTAssertEqual(queue.deadLetters.map(\.minor), [3])
+        XCTAssertTrue(diagnostics.events.contains(.uploadDeadLettered))
+    }
+
+    func testUnauthorizedRefreshesTokenAndRetriesBatch() async {
+        UploadAuthentication.isEnabled = true
+        defer { UploadAuthentication.isEnabled = false }
+
+        let queue = InMemoryQueue(records: [makeDetection(minor: 4)])
+        let transport = FakeTransport()
+        transport.statusErrors = [.unauthorized(statusCode: 401)]
+        let auth = FakeAuthProvider()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            auth: auth,
+            transport: transport
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForFlush(queue: queue)
+
+        XCTAssertEqual(auth.invalidateCount, 1)
+        XCTAssertEqual(auth.tokenCallCount, 2)
+        XCTAssertEqual(transport.uploads.count, 2)
+        XCTAssertTrue(queue.records.isEmpty)
+    }
+
+    func testUnauthorizedAfterRefreshSchedulesBackoff() async {
+        UploadAuthentication.isEnabled = true
+        defer { UploadAuthentication.isEnabled = false }
+
+        let queue = InMemoryQueue(records: [makeDetection(minor: 5)])
+        let transport = FakeTransport()
+        transport.statusErrors = [
+            .unauthorized(statusCode: 401),
+            .unauthorized(statusCode: 401),
+        ]
+        let auth = FakeAuthProvider()
+        let retry = ManualDelayedActionScheduler()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            auth: auth,
+            transport: transport,
+            retry: retry
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+
+        XCTAssertEqual(auth.invalidateCount, 1)
+        XCTAssertEqual(auth.tokenCallCount, 2)
+        XCTAssertEqual(transport.uploads.count, 2)
+        XCTAssertEqual(queue.records.count, 1)
+        XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
+    }
+
+    func testRateLimitedWithoutRetryAfterUsesExponentialBackoff() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 6)])
+        let transport = FakeTransport()
+        transport.statusErrors = [.rateLimited(retryAfter: nil)]
+        let retry = ManualDelayedActionScheduler()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            transport: transport,
+            retry: retry
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+        XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
+        XCTAssertEqual(queue.records.count, 1)
+    }
+
+    func testBackgroundWakeFlushesWhenOnline() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 8)])
+        let transport = FakeTransport()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            transport: transport
+        )
+
+        coordinator.start()
+        coordinator.setForeground(false)
+        await coordinator.noteQueueChanged()
+        await waitForFlush(queue: queue)
+
+        XCTAssertEqual(transport.uploads.count, 1)
+        XCTAssertTrue(queue.records.isEmpty)
+    }
+
+    func testBackgroundWakeDoesNotFlushWhenOffline() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 9)])
+        let path = FakeNetworkPathObserver(isSatisfied: false)
+        let transport = FakeTransport()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            transport: transport,
+            path: path
+        )
+
+        coordinator.start()
+        coordinator.setForeground(false)
+        await coordinator.noteQueueChanged()
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertTrue(transport.uploads.isEmpty)
+        XCTAssertEqual(queue.records.count, 1)
+    }
+
+    func testBackgroundWakeFlushIsBoundedToOneBatch() async {
+        let queue = InMemoryQueue(records: [
+            makeDetection(minor: 1),
+            makeDetection(minor: 2),
+            makeDetection(minor: 3),
+        ])
+        let transport = FakeTransport()
+        let configuration = SDKConfiguration.default.with(uploadBatchLimit: 1)
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            transport: transport,
+            configuration: configuration
+        )
+
+        coordinator.start()
+        coordinator.setForeground(false)
+        await coordinator.noteQueueChanged()
+        await waitUntil("one bounded batch uploaded") { transport.uploads.count == 1 }
+
+        XCTAssertEqual(transport.uploads.count, 1)
+        XCTAssertEqual(transport.uploads.first?.map(\.minor), [1])
+        XCTAssertEqual(queue.records.map(\.minor), [2, 3])
+    }
+
+    func testFlushAgainRunsOnceAfterInFlightFlush() async {
+        let first = makeDetection(minor: 10)
+        let second = makeDetection(minor: 11)
+        let queue = InMemoryQueue(records: [first])
+        let transport = FakeTransport()
+        let configuration = SDKConfiguration.default.with(uploadBatchLimit: 1)
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            transport: transport,
+            configuration: configuration
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        queue.records.append(second)
+        coordinator.flushOpportunistically()
+        await waitForFlush(queue: queue)
+        await waitUntil("both batches uploaded") { transport.uploads.count >= 2 }
+
+        XCTAssertEqual(transport.uploads.count, 2)
+        XCTAssertTrue(queue.records.isEmpty)
+    }
+
+    func testTokenFetchFailureUsesBackoffWithoutInvalidate() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 12)])
+        let auth = FakeAuthProvider()
+        auth.error = TokenBrokerAuthError.networkRequestFailed
+        let transport = FakeTransport()
+        let retry = ManualDelayedActionScheduler()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            auth: auth,
+            transport: transport,
+            retry: retry
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+
+        XCTAssertEqual(auth.invalidateCount, 0)
+        XCTAssertTrue(transport.uploads.isEmpty)
         XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
     }
 }

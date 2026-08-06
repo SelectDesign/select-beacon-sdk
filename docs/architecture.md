@@ -32,12 +32,12 @@ SelectBeaconSDK.shared.start()
 SelectBeaconSDK.shared.stop()
 ```
 
-- `configure` stores a valid app key and environment only. It does not range,
-  request permission, create the durable queue, or perform network I/O.
+- `configure` stores a valid app key and environment only. It does not monitor,
+  range, request permission, create the durable queue, or perform network I/O.
 - `start` is quiet until a valid app key has been configured.
-- `stop` stops ranging, finalizes open observation windows into the durable
-  queue, and clears active presence. The next `start` begins a fresh window
-  session.
+- `stop` stops region monitoring and ranging, finalizes open observation
+  windows into the durable queue, and clears active presence. The next `start`
+  begins a fresh window session.
 - `SDKOperationalStatus` communicates configuration, permission, ranging, and
   recoverable persistence issues without beacon or queue data.
 - Standard consumers do not receive beacon identities, RSSI, report IDs, or
@@ -92,16 +92,18 @@ process from mixing environments in the same detection session.
 `PermissionObserver.swift` maps Core Location authorization into the SDK's
 `LocationAuthorization` enum:
 
-- `always`: ranging may continue when the app is backgrounded.
-- `whenInUse`: ranging occurs only while the app is active.
+- `always`: the engine stays started when backgrounded. Region monitoring can
+  wake the process (host location background mode required); ranging runs in
+  short bursts on enter/inside rather than continuous background ranging.
+- `whenInUse`: monitoring/ranging run only while the app is active.
 - `notDetermined` and `unavailable`: the SDK stays quiet.
 
 The SDK **never** calls `requestWhenInUseAuthorization()` or
 `requestAlwaysAuthorization()`. The host owns the permission experience.
 
 `ApplicationLifecycleObserver.swift` observes app active/inactive transitions.
-It is used solely to enforce foreground-only ranging under When In Use
-authorization.
+It enforces foreground-only detection under When In Use, and under Always it
+tells the engine to drop continuous ranging while keeping region monitoring.
 
 `RangingSessionState.swift` is pure state-machine logic. It combines:
 
@@ -114,17 +116,25 @@ authorization.
 and produces either `startRanging`, `stopRanging`, or `none`. Keep policy
 decisions here so they can be unit tested without an app or location hardware.
 
-### 3. Beacon ranging
+### 3. Beacon region monitoring and ranging
 
-`CoreLocationDetectionEngine.swift` is a main-actor Core Location adapter. It creates
-`CLBeaconIdentityConstraint` values and starts/stops ranging through
-`CLLocationManager`.
+`CoreLocationDetectionEngine.swift` is a main-actor Core Location adapter. It:
 
-`LocationManaging` is a small wrapper protocol around the Core Location calls.
-It exists so engine tests can inject a fake manager and verify constraints
-without physical beacons.
+- Starts **region monitoring** (`CLBeaconRegion` + `startMonitoring(for:)`) for
+  each configured fleet UUID so iOS can wake a suspended app on enter/exit
+  (Always authorization + host background-location capability required).
+- Uses **ranging** (`CLBeaconIdentityConstraint` + `startRangingBeacons`) to
+  read major/minor/RSSI. Foreground keeps continuous ranging for responsiveness;
+  background drops continuous ranging and starts short ranging bursts on
+  enter / determined-state inside, stopping on exit / outside.
+- Soft-caps monitored UUIDs (`maxMonitoredBeaconUUIDs`) so the SDK does not
+  exhaust the app-wide 20-region budget shared with the host.
 
-The shipped configuration ranges one fleet UUID:
+`LocationManaging` wraps Core Location calls so tests can inject a fake manager
+and assert monitoring + ranging without physical beacons. Both monitoring and
+ranging share one manager/delegate. No CoreBluetooth.
+
+The shipped configuration monitors one fleet UUID:
 
 `76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911`
 
@@ -161,8 +171,8 @@ application:
 
 These views are intentionally separate. An in-window sighting updates active
 presence and window aggregates without appending a pending report until the
-window closes. Sparse background ranging wakes are expected to enqueue more
-often than they upload.
+window closes. Sparse background region wakes are expected to enqueue more often than they
+fully drain the upload queue.
 
 ### 4. Observation windows
 
@@ -241,10 +251,55 @@ production and each staging endpoint from sharing records after relaunch.
 `windowStartedAt`, `observationCount`, optional `location`). Legacy queue files
 that still use `rssi` / `detectedAt` decode through compatibility keys.
 
+### 5b. Transmission design pattern: store-and-forward
+
+Upload uses a **store-and-forward** pattern (delay-tolerant networking for an
+unreliable mobile client):
+
+1. **Store:** the moment an observation window closes, the report is appended to
+   the durable local FIFO queue. Capture never waits on the network.
+2. **Forward:** a separate coordinator drains that queue to the ingest API in
+   batches when the earliest connectivity-gated opportunity fires.
+3. **Retry / dead-letter:** failed forwards retry with policy; poison batches
+   leave the pending head so later records can still upload.
+
+**Why this shape (not per-event upload):**
+
+- **Battery-friendly batching** — fewer radio wakes than posting every sighting
+  or every window close.
+- **Graceful offline** — reports survive airplane mode, captive portals, and
+  process death because they land on disk before any send attempt.
+- **Background resilience** — region-monitoring wakes can resume ranging briefly,
+  enqueue closed windows, and attempt a **bounded** (single-batch) flush when
+  online without coupling capture success to a completed HTTP round trip or a
+  full queue drain.
+- **Guaranteed-eventual delivery** (at-least-once) — the durable queue plus
+  retry/dead-letter and wire `idempotency-key` fit a crowdsourced, delay-tolerant
+  system where the client is often unreliable and the backend can dedupe.
+
+**Non-goals of the pattern:** never transmit per raw ranging event; never let
+transmission block or endanger capture/persistence; never require the host to
+hold an open network session for detection to work.
+
+**Forward trigger set** (earliest wins; all require `start()` and a satisfied
+network path; retry/`Retry-After` pause suppresses early opportunistic sends):
+
+| Trigger                                  | Role in the pattern                                    |
+| ---------------------------------------- | ------------------------------------------------------ |
+| Foreground quiet debounce (60s)          | Primary coalescing window after activity settles       |
+| Max queue age (300s)                     | Backstop so a busy venue cannot stall forever          |
+| App background / foreground              | Opportunistic flush on lifecycle edges                 |
+| Connectivity return                      | Resume forward after offline retention                 |
+| Cold `start()` with disk backlog         | Recover prior-session stored reports                   |
+| Post-enqueue / region wake (when online) | Foreground: full drain; background: **one batch** only |
+
+Implementation of the forward half lives in `UploadCoordinator` (next section).
+
 ### 6. Upload coordinator
 
-`UploadCoordinator.swift` transmits already-persisted reports. Transmission
-triggers (earliest wins, all connectivity-gated):
+`UploadCoordinator.swift` is the **forward** half of store-and-forward: it
+transmits already-persisted reports. Triggers (see §5b; earliest wins, all
+connectivity-gated):
 
 1. **Quiet debounce (foreground only):** no valid beacon sighting for
    `sendDebounce` (60s). Any sighting resets the timer. This is not reset by
@@ -253,39 +308,59 @@ triggers (earliest wins, all connectivity-gated):
    (300s) forces a send even if activity never goes quiet.
 3. **App backgrounding** and **app foregrounding:** opportunistic immediate flush.
 4. **Connectivity return:** immediate flush when the path becomes satisfied.
+5. **Cold start:** `start()` materializes the durable queue from disk and, when
+   a backlog exists and the path is satisfied, flushes immediately.
+6. **Post-enqueue / ranging wake:** after durable enqueue (including background
+   region wakes), attempt a connectivity-gated flush when online. In the
+   **foreground**, this may drain the queue. In the **background**, flush is
+   **bounded to one batch** so the wake window stays short; remaining records
+   stay on disk until a later full-drain trigger. Quiet debounce remains
+   foreground-only. True system background `URLSession` transfer (Tier B) is
+   not implemented yet.
 
 Offline triggers do not attempt a send and do not start retry backoff.
-Failed sends retain the queue and retry with exponential backoff:
+Failed sends classify as follows:
 
-- Initial delay: `uploadRetryBackoff` = **15 seconds**
-- After each failed attempt: delay **doubles**
-- Cap: `uploadRetryBackoffMax` = **300 seconds**
-- On successful acknowledgement: delay **resets** to 15 seconds
-- Skipping a flush because the device is offline does **not** start this timer;
-  connectivity return (or another later trigger) attempts again
-- Records stay durable until acknowledged; the Select pending-report UI still
-  shows them as queued (no separate “retrying” status yet)
+- **5xx / network / token-fetch:** exponential backoff (`uploadRetryBackoff` 15s,
+  doubling to `uploadRetryBackoffMax` 300s). Each failure increments a persisted
+  per-record `uploadAttemptCount`. After `maxUploadAttempts` (8), the batch is
+  moved to a durable dead-letter store so the FIFO head can advance.
+- **429:** retryable; honor `Retry-After` when present, otherwise exponential
+  backoff. Attempts count toward `maxUploadAttempts`.
+- **401/403:** invalidate the cached token, refresh once, and retry the same
+  batch immediately. A second failure uses exponential backoff (no tight loop).
+- **Other 4xx (e.g. 400, 422):** non-retryable; dead-letter the batch immediately.
 
-One `AuthProvider.validToken()` call is made per batch. Sparse region-entry
-ranging wakes enqueue only; they never invoke flush from `handle(_:)`.
-Successful acknowledgement notifies `onSelectPendingReportsChanged` with the
-remaining FIFO snapshot.
+Dead-lettered records are retained on disk for diagnostics (not uploaded again)
+and emit `uploadDeadLettered`. The pending queue is bounded by `maxQueueSize`
+(500) and `maxRecordAge` (7 days); eviction emits `durableQueueEvicted`.
+
+On successful acknowledgement: backoff **resets** to 15 seconds. Records stay
+durable until acknowledged or dead-lettered; the Select pending-report UI still
+shows pending items as queued (no separate “retrying” status yet).
+
+`AuthProvider.validToken()` is called per batch (plus one refresh on ingest
+401/403). Successful acknowledgement notifies `onSelectPendingReportsChanged`
+with the remaining FIFO snapshot.
 
 `UploadInterfaces.swift` defines the upload seams:
 
-- `AuthProvider` supplies a currently valid bearer token.
+- `AuthProvider` supplies a currently valid bearer token and can
+  `invalidateCachedToken()`.
 - `UploadTransport` uploads a batch with that authorization.
 - `UploadResponse` models a successful acknowledgement.
 
-`BeaconUploadPayload.swift` defines the confirmed ingestion body as a JSON:API
-v1 document: `{ "data": [ { "type": "sdk_beacon", "attributes": { … } } ] }`
+`BeaconUploadPayload.swift` defines the confirmed ingestion body as
+`{ "detections": [ { "type": "sdk_beacon", "attributes": { … } } ] }`
 with kebab-case attribute keys `uuid`, `major`, `minor`, `best-rssi-dbm`,
-`observations`, `lat`, `lng`, `first-seen`, `last-seen`, and `device-id`
+`observations`, `lat`, `lng`, `first-seen`, `last-seen`, `device-id`, and
+`idempotency-key`
 (`UIDevice.identifierForVendor`). `first-seen` maps from `windowStartedAt` and
-`last-seen` from `latestTimestamp`. Client resource `id` is omitted. Missing
-location encodes `lat`/`lng` as JSON `null`. The durable queue `id` is not
-included in the body; on HTTP **200** the transport acknowledges the entire
-posted batch using those local IDs. Eddystone `instanceId` is out of scope
+`last-seen` from `latestTimestamp`. `idempotency-key` is the durable queue
+record UUID and is stable across retries so the backend can dedupe at-least-once
+re-sends. Client resource `id` is omitted. Missing location encodes `lat`/`lng`
+as JSON `null`. On HTTP **200** the transport acknowledges the entire posted
+batch using those local IDs. Eddystone `instanceId` is out of scope
 (Core Location iBeacon only). `deviceId` is resolved at upload time; if IDFV is
 unavailable the flush is skipped, recorded as `deviceIdentifierUnavailable`,
 and retried with backoff.
@@ -293,9 +368,11 @@ and retried with backoff.
 Auth and ingest share the configured environment host:
 
 - Token broker: `POST {base}/ingest/auth/v1` with kebab-case `app-key`;
-  response `access-token` / `expires-in`
-- Ingest: `POST {base}/ingest/sdk/v1` with
-  `Authorization: Bearer {token}` and
+  response `access-token` / `expires-in` (**currently paused** —
+  `UploadAuthentication.isEnabled` is `false`; ingest posts without Bearer auth
+  until the broker is ready)
+- Ingest: `POST {base}/ingest/sdk/v1/detections` with
+  `Authorization: Bearer {token}` when auth is enabled, and
   `Content-Type` / `Accept`: `application/vnd.api+json`
 
 `TokenBrokerAuthProvider.swift` provides the SDK-owned authentication
@@ -339,7 +416,8 @@ The tests are split by responsibility:
   covers durable stop-finalize ordering, repeated-stop races, and queue clearing.
 - Other tests under `Tests/SelectBeaconSDKTests/Detection/` cover the pure
   ranging state, observation-window store, location provider, and Core Location
-  engine adapter.
+  engine adapter — including region-monitoring regression guards (monitoring is
+  required; ranging-only setup must fail tests).
 - `Tests/SelectBeaconSDKTests/Persistence/FileDetectionQueueTests.swift`
   covers relaunch, acknowledgement, persistence errors, malformed queue data,
   legacy JSON migration, and environment isolation.
@@ -349,7 +427,8 @@ The tests are split by responsibility:
 - `Tests/SelectBeaconSDKTests/Networking/TokenBrokerAuthProviderTests.swift`
   covers cached token retrieval and refresh behavior without real networking.
 - `Tests/SelectBeaconSDKTests/Networking/UploadCoordinatorTests.swift`
-  covers debounce reset, batch auth, offline backoff, and opportunistic flush.
+  covers debounce reset, batch auth, offline backoff, opportunistic full drain,
+  and **bounded single-batch** flush on background wake.
 - `Tests/SelectBeaconAppSupportTests/` verifies the Select-only adapter boundary.
 - `Tests/SelectBeaconSDKTests/Support/` holds shared fakes and fixtures.
 
@@ -360,6 +439,11 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 xcodebuild test -scheme SelectBeaconSDK-Package \
 -destination 'platform=iOS Simulator,id=<simulator-udid>'
 ```
+
+PRs targeting `main` run the same suite via
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) (macOS runner, runtime
+simulator UDID). Confirm the first Actions run finds an available iPhone
+simulator on the image.
 
 The Simulator cannot range beacons. Use
 [`Examples/BeaconTest/README.md`](../Examples/BeaconTest/README.md) for the
@@ -377,9 +461,9 @@ physical iPhone/iPad validation checklist.
 | `Detection/PermissionObserver.swift`                     | Observe-only Core Location authorization adapter             |
 | `Detection/ApplicationLifecycleObserver.swift`           | App activity observer for When In Use policy                 |
 | `Detection/RangingSessionState.swift`                    | Pure ranging policy state machine                            |
-| `Detection/DetectionEngine.swift`                        | Internal ranging engine seam                                 |
+| `Detection/DetectionEngine.swift`                        | Internal monitoring/ranging engine seam                      |
 | `Detection/DetectedBeacon.swift`                         | Internal platform-neutral ranging DTO                        |
-| `Detection/CoreLocationDetectionEngine.swift`            | Main-actor Core Location beacon ranging adapter              |
+| `Detection/CoreLocationDetectionEngine.swift`            | Main-actor Core Location region monitor + ranging adapter    |
 | `Detection/ObservationWindowStore.swift`                 | Pure 60s observation-window aggregation                      |
 | `Detection/ActiveBeaconStore.swift`                      | In-memory active beacon snapshot                             |
 | `Detection/LocationFix.swift`                            | SDK-owned cached location snapshot                           |
@@ -387,11 +471,15 @@ physical iPhone/iPad validation checklist.
 | `Detection/CoreLocationProvider.swift`                   | Hybrid coarse / significant-change location                  |
 | `Persistence/DurableDetectionQueue.swift`                | Actor-isolated persisted detection queue                     |
 | `Networking/UploadInterfaces.swift`                      | Auth/transport upload contracts                              |
-| `Networking/BeaconUploadPayload.swift`                   | JSON:API `sdk_beacon` document + kebab-case encoder          |
+| `Networking/BeaconUploadPayload.swift`                   | `{ detections: [sdk_beacon…] }` encoder + kebab-case attrs   |
 | `Networking/DeviceIdentifying.swift`                     | IDFV (`device-id`) seam for upload stamping                  |
 | `Networking/HTTPIngestUploadTransport.swift`             | Live ingest POST with Bearer auth                            |
+| `Networking/HTTPIngestStatusClassifier.swift`            | HTTP status → retry / dead-letter / refresh classification   |
+| `Networking/UploadFailurePolicy.swift`                   | Maps transport/auth errors to flush outcomes                 |
+| `Networking/UploadAuthentication.swift`                  | Temporary auth pause kill-switch + `PausedAuthProvider`      |
+| `Networking/RetryAfterHeader.swift`                      | Parse `Retry-After` for 429 backoff                          |
 | `Networking/NetworkPathObserver.swift`                   | Restart-safe connectivity observer                           |
-| `Networking/UploadCoordinator.swift`                     | Quiet debounce, max-age, and opportunistic batch upload      |
+| `Networking/UploadCoordinator.swift`                     | Quiet debounce, max-age, full drain, bounded wake flush      |
 | `Networking/TokenBrokerAuthProvider.swift`               | In-memory Select token-broker authorization                  |
 | `Support/Clock.swift`                                    | Injectable time source                                       |
 | `Support/DelayedActionScheduler.swift`                   | Shared replaceable one-shot timer seam                       |
@@ -413,5 +501,5 @@ physical iPhone/iPad validation checklist.
 - Do not add an endpoint, payload, or Auth0 client secret to the SDK. Auth uses
   Select's token broker with the configured app key only (`/ingest/auth/v1` on
   the environment host).
-- Do not invent alternate ingest paths; use `/ingest/sdk/v1` with JSON:API
-  `sdk_beacon` resources and kebab-case attributes.
+- Do not invent alternate ingest paths; use `/ingest/sdk/v1/detections` with JSON:API
+  `sdk_beacon` resources under a top-level `detections` array and kebab-case attributes.

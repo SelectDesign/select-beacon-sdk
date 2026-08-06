@@ -120,6 +120,35 @@ public final class SelectBeaconSDK {
         locationProvider?.start()
         uploadCoordinator?.start()
         apply(session.startRequested())
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let outcome = await self.materializeDurableQueueIfNeeded()
+            guard outcome.loaded else { return }
+            await self.uploadCoordinator?.noteQueueChanged()
+            if outcome.hadBacklog {
+                self.uploadCoordinator?.flushOpportunistically()
+            }
+        }
+    }
+
+    /// Ensures `queue` references the durable store and disk contents are loaded.
+    private struct MaterializeOutcome {
+        var loaded: Bool
+        var hadBacklog: Bool
+    }
+
+    @discardableResult
+    private func materializeDurableQueueIfNeeded() async -> MaterializeOutcome {
+        guard let queue = resolvedQueue() else {
+            return MaterializeOutcome(loaded: false, hadBacklog: false)
+        }
+        do {
+            let hadBacklog = try await queue.oldestQueuedAt() != nil
+            return MaterializeOutcome(loaded: true, hadBacklog: hadBacklog)
+        } catch {
+            recordQueueFailure(error)
+            return MaterializeOutcome(loaded: false, hadBacklog: false)
+        }
     }
 
     /// Stops ranging and ends the active detection session.
@@ -212,6 +241,11 @@ public final class SelectBeaconSDK {
             observer.onActivityChanged = { [weak self] isActive in
                 guard let self else { return }
                 self.apply(self.session.applicationActivityChanged(isActive))
+                // Always + background keeps the engine started (monitoring on);
+                // sync ranging policy. WhenInUse + inactive already stopped the engine.
+                if self.session.isRanging {
+                    self.engine?.setApplicationActive(isActive)
+                }
                 self.uploadCoordinator?.setForeground(isActive)
                 self.uploadCoordinator?.flushOpportunistically()
             }
@@ -259,6 +293,13 @@ public final class SelectBeaconSDK {
     }
 
     private func makeLiveAuthProvider() -> AuthProvider? {
+        guard enablementConfiguration?.endpoint.isUsableHTTPBase == true else {
+            return nil
+        }
+        // Auth paused: post ingest without the token broker until it is ready.
+        guard UploadAuthentication.isEnabled else {
+            return PausedAuthProvider()
+        }
         guard let configuration = enablementConfiguration?.tokenBrokerConfiguration() else {
             return nil
         }
@@ -276,7 +317,8 @@ public final class SelectBeaconSDK {
         }
         return HTTPIngestUploadTransport(
             ingestURL: ingestURL,
-            deviceIdentifier: deviceIdentifier
+            deviceIdentifier: deviceIdentifier,
+            clock: dependencies.clock
         )
     }
 
@@ -289,6 +331,7 @@ public final class SelectBeaconSDK {
         case .startRanging:
             let engine = detectionEngine()
             engine.start(uuids: SDKConfiguration.default.monitoredUUIDs)
+            engine.setApplicationActive(session.isApplicationActive)
             session.didStartRanging()
             locationProvider?.setDetecting(true)
         case .stopRanging:
@@ -377,6 +420,9 @@ public final class SelectBeaconSDK {
                     deliverySession: session
                 )
             }
+            // Flush after durable write (+ stop-finalize settlement) so upload
+            // work cannot delay clearing `selectIsStopFinalizePending`.
+            await self?.uploadCoordinator?.noteQueueChanged()
         }
     }
 
@@ -408,31 +454,21 @@ public final class SelectBeaconSDK {
 
     private func enqueue(_ detection: QueuedDetection, for session: Int) async {
         do {
-            guard let configuration = enablementConfiguration else { return }
-            let queue = self.queue ?? dependencies.queueFactory(configuration.queueStorageIdentifier)
-            self.queue = queue
+            guard let queue = resolvedQueue() else { return }
             // Persist even when deliverySession advanced: finalized reports must
             // not be abandoned. Adapter notifications stay session-gated below.
-            try await queue.enqueue(detection)
-            if shouldNotify(for: session) {
-                await notifyPendingReportsChanged(for: session)
-            }
-            await uploadCoordinator?.noteQueueChanged()
-        } catch {
-            let event: DiagnosticEvent
-            if case DurableDetectionQueueError.unreadableStoredDetections = error {
-                event = .durableQueueUnreadable
-            } else {
-                event = .durableQueueWriteFailed
-            }
-            dependencies.diagnosticsReporter.record(event, error: error)
-            updateOperationalStatus(
-                .degraded(
-                    event == .durableQueueUnreadable
-                        ? .durableQueueUnreadable
-                        : .durableQueueWriteFailed
+            let result = try await queue.enqueue(detection, now: dependencies.clock.now)
+            if result.evictedCount > 0 {
+                dependencies.diagnosticsReporter.record(
+                    .durableQueueEvicted,
+                    error: DiagnosticNotice("evicted \(result.evictedCount)")
                 )
-            )
+            }
+            if shouldNotify(for: session) {
+                await publishPendingReportsSnapshot(deliverySession: session)
+            }
+        } catch {
+            recordQueueFailure(error)
         }
     }
 
@@ -450,9 +486,7 @@ public final class SelectBeaconSDK {
 
     @_spi(SelectApp)
     public func selectPendingReports() async throws -> [SelectPendingBeaconReport] {
-        guard let configuration = enablementConfiguration else { return [] }
-        let queue = self.queue ?? dependencies.queueFactory(configuration.queueStorageIdentifier)
-        self.queue = queue
+        guard let queue = resolvedQueue() else { return [] }
         let records = try await queue.pendingRecords()
         return records.map(\.pendingReport)
     }
@@ -463,7 +497,7 @@ public final class SelectBeaconSDK {
     /// settling, so clear cannot race an in-flight durable write from stop.
     @_spi(SelectApp)
     public func selectClearPendingReports() async throws {
-        guard let configuration = enablementConfiguration else {
+        guard enablementConfiguration != nil else {
             throw SelectPendingReportsClearError.notConfigured
         }
         guard !session.wantsRanging else {
@@ -473,8 +507,9 @@ public final class SelectBeaconSDK {
             throw SelectPendingReportsClearError.stopFinalizePending
         }
 
-        let queue = self.queue ?? dependencies.queueFactory(configuration.queueStorageIdentifier)
-        self.queue = queue
+        guard let queue = resolvedQueue() else {
+            throw SelectPendingReportsClearError.notConfigured
+        }
         try await queue.clear()
 
         if case .degraded(.durableQueueUnreadable) = operationalStatus {
@@ -542,27 +577,51 @@ public final class SelectBeaconSDK {
         scheduleAbsenceExpiry()
     }
 
-    private func notifyPendingReportsChanged(for session: Int) async {
+    /// Publishes the pending-queue snapshot after enqueue, upload acknowledgement,
+    /// or stop-finalize settlement. When `deliverySession` is set, skips the
+    /// callback if that session is no longer current (stale ranging delivery).
+    private func publishPendingReportsSnapshot(deliverySession: Int? = nil) async {
         do {
             let reports = try await selectPendingReports()
-            guard shouldNotify(for: session) else { return }
+            if let deliverySession, !shouldNotify(for: deliverySession) {
+                return
+            }
             onSelectPendingReportsChanged?(reports)
         } catch {
-            dependencies.diagnosticsReporter.record(.durableQueueUnreadable, error: error)
-            updateOperationalStatus(.degraded(.durableQueueUnreadable))
+            recordQueueFailure(error, forceUnreadable: true)
         }
     }
 
-    /// Publishes the pending-queue snapshot after upload acknowledgement or
-    /// stop-finalize settlement. Not gated by ranging delivery sessions.
-    private func publishPendingReportsSnapshot() async {
-        do {
-            let reports = try await selectPendingReports()
-            onSelectPendingReportsChanged?(reports)
-        } catch {
-            dependencies.diagnosticsReporter.record(.durableQueueUnreadable, error: error)
-            updateOperationalStatus(.degraded(.durableQueueUnreadable))
+    /// Materializes the durable queue for the current enablement configuration.
+    private func resolvedQueue() -> (any DurableDetectionQueue)? {
+        guard let configuration = enablementConfiguration else { return nil }
+        if queue == nil {
+            queue = dependencies.queueFactory(configuration.queueStorageIdentifier)
         }
+        return queue
+    }
+
+    /// Records a durable-queue I/O failure and degrades operational status.
+    ///
+    /// When `forceUnreadable` is true (pending snapshot reads), always maps to
+    /// `.durableQueueUnreadable` to match historical adapter-facing behavior.
+    private func recordQueueFailure(_ error: Error, forceUnreadable: Bool = false) {
+        let event: DiagnosticEvent
+        if forceUnreadable {
+            event = .durableQueueUnreadable
+        } else if case DurableDetectionQueueError.unreadableStoredDetections = error {
+            event = .durableQueueUnreadable
+        } else {
+            event = .durableQueueWriteFailed
+        }
+        dependencies.diagnosticsReporter.record(event, error: error)
+        updateOperationalStatus(
+            .degraded(
+                event == .durableQueueUnreadable
+                    ? .durableQueueUnreadable
+                    : .durableQueueWriteFailed
+            )
+        )
     }
 
     // MARK: - Operational status

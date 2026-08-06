@@ -1,6 +1,10 @@
 import Foundation
 
-/// Attributes for one `sdk_beacon` JSON:API resource (kebab-case on the wire).
+/// Attributes for one `sdk_beacon` resource (kebab-case on the wire).
+///
+/// `idempotencyKey` is the durable queue record id. It is stable across retries
+/// so the ingest API can dedupe at-least-once re-sends. Backend must treat this
+/// key as the idempotency contract for `sdk_beacon` detections.
 struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
     let uuid: UUID
     let major: Int
@@ -12,6 +16,8 @@ struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
     let firstSeen: Date
     let lastSeen: Date
     let deviceId: String
+    /// Stable per durable queue record; identical on every re-send of that record.
+    let idempotencyKey: String
 
     enum CodingKeys: String, CodingKey {
         case uuid
@@ -24,6 +30,7 @@ struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
         case firstSeen = "first-seen"
         case lastSeen = "last-seen"
         case deviceId = "device-id"
+        case idempotencyKey = "idempotency-key"
     }
 
     init(detection: QueuedDetection, deviceId: String) {
@@ -37,6 +44,7 @@ struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
         firstSeen = detection.windowStartedAt
         lastSeen = detection.latestTimestamp
         self.deviceId = deviceId
+        idempotencyKey = detection.id.uuidString
     }
 
     func encode(to encoder: Encoder) throws {
@@ -59,10 +67,11 @@ struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
         try container.encode(firstSeen, forKey: .firstSeen)
         try container.encode(lastSeen, forKey: .lastSeen)
         try container.encode(deviceId, forKey: .deviceId)
+        try container.encode(idempotencyKey, forKey: .idempotencyKey)
     }
 }
 
-/// One JSON:API resource; client `id` is intentionally omitted.
+/// One resource; JSON:API client `id` is intentionally omitted (use attributes.idempotency-key).
 struct BeaconUploadResource: Encodable, Equatable, Sendable {
     static let resourceType = "sdk_beacon"
 
@@ -75,12 +84,12 @@ struct BeaconUploadResource: Encodable, Equatable, Sendable {
     }
 }
 
-/// JSON:API document posted to `/ingest/sdk/v1`.
+/// Document posted to `/ingest/sdk/v1/detections`.
 struct BeaconUploadDocument: Encodable, Equatable, Sendable {
-    let data: [BeaconUploadResource]
+    let detections: [BeaconUploadResource]
 }
 
-/// Builds the JSON:API body a live HTTP upload transport will POST.
+/// Builds the ingest body a live HTTP upload transport will POST.
 struct BeaconUploadPayloadEncoder {
     struct MissingDeviceIdentifier: Error {}
 
@@ -106,13 +115,13 @@ struct BeaconUploadPayloadEncoder {
                 attributes: BeaconUploadAttributes(detection: detection, deviceId: deviceId)
             )
         }
-        return BeaconUploadDocument(data: resources)
+        return BeaconUploadDocument(detections: resources)
     }
 
-    /// Encodes a JSON:API document of `sdk_beacon` resources.
+    /// Encodes `{ "detections": [ sdk_beacon resources… ] }`.
     ///
     /// Throws `MissingDeviceIdentifier` when `deviceId` is nil or empty so the
-    /// coordinator never sends a body without a vendor device id.
+    /// upload path never sends a body without a vendor device id.
     func encode(_ detections: [QueuedDetection], deviceId: String?) throws -> Data {
         guard let deviceId, !deviceId.isEmpty else {
             throw MissingDeviceIdentifier()

@@ -354,7 +354,8 @@ final class SelectBeaconSDKObservationTests: XCTestCase {
         SDKTestFixture.closeOpenWindows(clock: clock, absenceScheduler: absenceScheduler)
         await waitForDiagnostics(diagnostics, event: .durableQueueUnreadable)
 
-        XCTAssertEqual(diagnostics.events, [.durableQueueUnreadable])
+        XCTAssertTrue(diagnostics.events.contains(.durableQueueUnreadable))
+        XCTAssertTrue(diagnostics.events.allSatisfy { $0 == .durableQueueUnreadable })
         XCTAssertEqual(sdk.operationalStatus, .degraded(.durableQueueUnreadable))
     }
 

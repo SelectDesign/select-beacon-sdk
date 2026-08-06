@@ -8,8 +8,8 @@ The harness UI has three beacon sections plus session controls (see
 [CONSUMER_UI_PROMPT.md](CONSUMER_UI_PROMPT.md)):
 
 - **Session** — Start/Stop; Start stays disabled while `isStopFinalizePending`
-- **In range** — active beacons  
-- **Open summaries** — in-progress 60s windows  
+- **In range** — active beacons
+- **Open summaries** — in-progress 60s windows
 - **Queued for upload** — durable FIFO (drains after debug auto-ack flush)
 
 Run the following checks on both a physical iPhone and iPad:
@@ -32,7 +32,9 @@ Run the following checks on both a physical iPhone and iPad:
 8. With When In Use authorization, background the app and confirm detections stop;
    foreground it and confirm they resume.
 9. With Always authorization and the host's location background mode enabled, verify
-   detection continues in the background. Force-closing the app is not a supported
-   background-detection scenario.
+   region-monitoring wakes can resume detection (short ranging bursts) while the
+   app is backgrounded. Force-closing the app is not a supported
+   background-detection scenario. Background upload after a wake should attempt
+   at most one batch; remaining queue rows stay until a later full drain.
 10. Disable connectivity, detect a beacon through window close, relaunch, and verify
-   the durable queue still shows pending reports until a successful ack path runs.
+    the durable queue still shows pending reports until a successful ack path runs.

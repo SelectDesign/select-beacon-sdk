@@ -27,6 +27,15 @@ struct SDKConfiguration {
     /// Upper bound for exponential upload retry backoff.
     let uploadRetryBackoffMax: TimeInterval
 
+    /// Retryable upload failures for a record before it is moved to the dead-letter store.
+    let maxUploadAttempts: Int
+
+    /// Maximum pending detections retained in the durable FIFO queue.
+    let maxQueueSize: Int
+
+    /// Drop pending detections whose `queuedAt` is older than this age.
+    let maxRecordAge: TimeInterval
+
     /// Coarse accuracy for standard location updates while detecting ("which store/area").
     /// Uses hundred-meter class accuracy instead of Best to limit battery use.
     let locationAccuracy: CLLocationAccuracy
@@ -47,10 +56,38 @@ struct SDKConfiguration {
         uploadBatchLimit: 50,
         uploadRetryBackoff: 15,
         uploadRetryBackoffMax: 300,
+        maxUploadAttempts: 8,
+        maxQueueSize: 500,
+        maxRecordAge: 604_800,
         locationAccuracy: kCLLocationAccuracyHundredMeters,
         locationDistanceFilterMeters: 100,
         useSignificantChangeBaseline: true
     )
+
+    /// Returns a copy with selected knobs overridden (tests and local wiring).
+    func with(
+        uploadBatchLimit: Int? = nil,
+        maxUploadAttempts: Int? = nil,
+        useSignificantChangeBaseline: Bool? = nil
+    ) -> SDKConfiguration {
+        SDKConfiguration(
+            monitoredUUIDs: monitoredUUIDs,
+            windowDuration: windowDuration,
+            absenceTimeout: absenceTimeout,
+            sendDebounce: sendDebounce,
+            maxQueueAge: maxQueueAge,
+            uploadBatchLimit: uploadBatchLimit ?? self.uploadBatchLimit,
+            uploadRetryBackoff: uploadRetryBackoff,
+            uploadRetryBackoffMax: uploadRetryBackoffMax,
+            maxUploadAttempts: maxUploadAttempts ?? self.maxUploadAttempts,
+            maxQueueSize: maxQueueSize,
+            maxRecordAge: maxRecordAge,
+            locationAccuracy: locationAccuracy,
+            locationDistanceFilterMeters: locationDistanceFilterMeters,
+            useSignificantChangeBaseline: useSignificantChangeBaseline
+                ?? self.useSignificantChangeBaseline
+        )
+    }
 
     private static let selectFleetUUID = UUID(
         uuid: (
@@ -85,7 +122,7 @@ struct APIEndpoint: Equatable {
 
     /// `POST` target for JSON:API beacon ingest.
     var ingestURL: URL? {
-        url(path: "/ingest/sdk/v1")
+        url(path: "/ingest/sdk/v1/detections")
     }
 
     /// True when `baseURL` is a usable http(s) absolute URL (not the production placeholder).
