@@ -16,11 +16,11 @@ limitation.
       the durable queue.
 - [ ] End-to-end production upload after the host URL is set (same path,
       production key + host).
-- [x] Confirm with VIP/backend that wire attributes match ingest
-      (`uuid`, `major`, `minor`, `best-rssi-dbm`, `observations`, `lat`/`lng`,
-      `first-seen`, `last-seen`, `device-id`, `idempotency-key`) and that
-      whole-batch ack on HTTP 200 is final. Backend must dedupe on
-      `idempotency-key` (at-least-once delivery).
+- [ ] Confirm with VIP/backend that wire attributes match ingest
+      (`uuid`, `major`, `minor`, `best_rssi_dbm`, `observations`, `lat`/`lng`,
+      `first_seen`, `last_seen`, `device_id`, `idempotency_key`; snake_case)
+      and that whole-batch ack on HTTP 200 is final. Backend must dedupe on
+      `idempotency_key` (at-least-once delivery).
 - [ ] Re-enable ingest auth: set `UploadAuthentication.isEnabled = true` once
       the token broker is ready (Bearer header + 401 refresh path).
 - [ ] VIP confirmation for background `URLSession` (Tier B) if system-completed
@@ -93,7 +93,7 @@ limitation.
 ## Done recently (do not re-open unless product asks)
 
 - Observation-window aggregates and durable enqueue-on-close
-- Flat JSON ingest fields (`first-seen`, `last-seen`, `best-rssi-dbm`, …)
+- Flat JSON ingest fields (`first_seen`, `last_seen`, `best_rssi_dbm`, …; snake_case)
 - Staging live auth (`/ingest/auth/v1`) + HTTP ingest (`/ingest/sdk/v1/detections`)
 - Upload coordinator (quiet debounce, max queue age, opportunistic full drain,
   bounded single-batch background wake flush, backoff)

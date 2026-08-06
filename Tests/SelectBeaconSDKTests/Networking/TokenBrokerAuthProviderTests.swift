@@ -21,8 +21,8 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
             let expiresIn: TimeInterval
 
             enum CodingKeys: String, CodingKey {
-                case accessToken = "access-token"
-                case expiresIn = "expires-in"
+                case accessToken = "access_token"
+                case expiresIn = "expires_in"
             }
         }
 
@@ -142,7 +142,7 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
 
         XCTAssertEqual(token, "new-token")
         XCTAssertEqual(requestCount, 1)
-        XCTAssertEqual(request, ["app-key": "select-app-key"])
+        XCTAssertEqual(request, ["app_key": "select-app-key"])
     }
 
     func testRefreshesTokenWithinSafetyMargin() async throws {

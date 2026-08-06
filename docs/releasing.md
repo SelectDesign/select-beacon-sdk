@@ -24,7 +24,7 @@ Do not create a production release until all applicable gates are complete:
 - Replace `REPLACE_ME_PRODUCTION` with the confirmed production API endpoint.
 - Validate the Select token-broker endpoint and app-key provisioning process.
 - Confirm the backend's upload payload and acknowledgement contract
-  (including dedupe on `idempotency-key` for at-least-once re-sends).
+  (including dedupe on `idempotency_key` for at-least-once re-sends).
 - Validate the existing upload coordinator, token broker, and HTTP transport
   end-to-end against the production host.
 

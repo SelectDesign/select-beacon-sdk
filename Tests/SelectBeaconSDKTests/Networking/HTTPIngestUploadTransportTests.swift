@@ -81,7 +81,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         XCTAssertNil(items.first?["type"])
         XCTAssertNil(items.first?["attributes"])
         XCTAssertEqual(items.first?["minor"] as? Int, 1)
-        XCTAssertEqual(items.first?["idempotency-key"] as? String, detections[0].id.uuidString)
+        XCTAssertEqual(items.first?["idempotency_key"] as? String, detections[0].id.uuidString)
     }
 
     func testNon200Throws() async {

@@ -40,7 +40,7 @@ final class TokenBrokerAuthProvider: AuthProvider {
         let appKey: String
 
         enum CodingKeys: String, CodingKey {
-            case appKey = "app-key"
+            case appKey = "app_key"
         }
     }
 
@@ -49,8 +49,8 @@ final class TokenBrokerAuthProvider: AuthProvider {
         let expiresIn: TimeInterval
 
         enum CodingKeys: String, CodingKey {
-            case accessToken = "access-token"
-            case expiresIn = "expires-in"
+            case accessToken = "access_token"
+            case expiresIn = "expires_in"
         }
     }
 

@@ -161,23 +161,23 @@ When a usable environment base URL is configured, each ingest body is posted to
       "uuid": "76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911",
       "major": 1,
       "minor": 42,
-      "best-rssi-dbm": -55,
+      "best_rssi_dbm": -55,
       "observations": 4,
       "lat": 40.7128,
       "lng": -74.006,
-      "first-seen": "2023-11-14T22:12:50Z",
-      "last-seen": "2023-11-14T22:13:20Z",
-      "device-id": "<identifierForVendor>",
-      "idempotency-key": "<durable-queue-record-id>"
+      "first_seen": "2023-11-14T22:12:50Z",
+      "last_seen": "2023-11-14T22:13:20Z",
+      "device_id": "<identifierForVendor>",
+      "idempotency_key": "<durable-queue-record-id>"
     }
   ]
 }
 ```
 
-`uuid` is the iBeacon proximity UUID. `device-id` is the vendor device ID (IDFV).
-`first-seen` / `last-seen` are the observation window start and latest sighting.
+`uuid` is the iBeacon proximity UUID. `device_id` is the vendor device ID (IDFV).
+`first_seen` / `last_seen` are the observation window start and latest sighting.
 `lat`/`lng` may be `null` when no location fix was available. Auth uses the same
-host at `/ingest/auth/v1` with kebab-case `app-key`, and ingest sends
+host at `/ingest/auth/v1` with snake_case `app_key`, and ingest sends
 `Authorization: Bearer {token}` when auth is enabled. HTTP 200 clears the entire
 uploaded batch from the durable queue.
 

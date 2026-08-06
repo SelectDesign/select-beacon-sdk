@@ -18,8 +18,11 @@
 - Standard consumers receive `SelectBeaconSDK.configure(appKey:)`,
   `shared.start()`, `shared.stop()`, and non-sensitive `operationalStatus`.
 - `SelectBeaconAppSupport` is a separate Select-owned product exposing active,
-  open-window, and pending-report snapshots through a core SPI bridge. The SPI
-  is an organizational boundary, not security enforcement.
+  open-window, pending-report, and dead-lettered-report snapshots through a
+  core SPI bridge. The SPI is an organizational boundary, not security
+  enforcement. Active beacons are ordered by UUID → major → minor. Dead letters
+  use the same report model as pending but stay in a separate list and are not
+  re-uploaded; `clearPendingReports()` does not clear them.
 - The host supplies an app key before detection can start. Configuration stores
   it only; configure never starts ranging, reads disk, or uses the network.
 - Production is the default (`REPLACE_ME_PRODUCTION` until its host is
@@ -86,13 +89,13 @@
   limits. 401/403 invalidates the token, refreshes once, and retries immediately.
   Other 4xx dead-letter the batch; retryable failures dead-letter after
   `maxUploadAttempts`. Pending queue size/age caps apply with eviction diagnostics.
-- Auth is `POST {base}/ingest/auth/v1` with `app-key`; responses use
-  `access-token` and `expires-in`.
+- Auth is `POST {base}/ingest/auth/v1` with `app_key`; responses use
+  `access_token` and `expires_in`.
 - Ingest is `POST {base}/ingest/sdk/v1/detections` with body
-  `{ "detections": [ { "uuid": …, "best-rssi-dbm": …, … } ] }`,
-  kebab-case fields (including stable `idempotency-key`), and Bearer
+  `{ "detections": [ { "uuid": …, "best_rssi_dbm": …, … } ] }`,
+  snake_case fields (including stable `idempotency_key`), and Bearer
   authorization. HTTP 200 acknowledges the posted batch. Backend must dedupe on
-  `idempotency-key` for at-least-once re-sends.
+  `idempotency_key` for at-least-once re-sends.
 - The SDK obtains short-lived tokens using `appKey` only. It never holds or
   transmits an app secret or Auth0 client secret.
 - The production host remains `REPLACE_ME_PRODUCTION` until replaced; explicit

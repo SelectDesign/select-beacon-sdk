@@ -6,14 +6,17 @@ import `@_spi(SelectApp)` in application code — use the AppSupport product onl
 
 ## Goal
 
-Show three live sections:
+Show four live sections:
 
 1. **In range** — beacons heard within the SDK’s ~30s absence timeout
 2. **Open summaries** — in-progress 60s observation windows (running aggregates)
 3. **Queued for upload** — durable reports waiting for acknowledgement
+4. **Dead letter** — durable reports removed from pending after non-retryable
+   failure or max upload attempts (diagnostics only; not re-uploaded)
 
 Successfully acknowledged reports must **disappear** from the queued list via
 AppSupport callbacks (do not keep a local “sent” history unless product asks).
+Poison / max-attempt failures must leave Queued and appear under Dead letter.
 
 ## Setup (host app)
 
@@ -21,21 +24,24 @@ AppSupport callbacks (do not keep a local “sent” history unless product asks
 2. Call `SelectBeaconSDK.configure(appKey:)` then register AppSupport callbacks,
    then `SelectBeaconSDK.shared.start()`.
 3. On appear, also call `try await SelectBeaconAppSupport.shared.pendingReports()`
-   to load queue records from a prior launch.
+   and `try await SelectBeaconAppSupport.shared.deadLetteredReports()` to load
+   queue records from a prior launch.
 4. Optional for local demos only:  
    `SelectBeaconSDK.shared.selectInstallDebugAutoAckUploadSeams()`  
    (`@_spi(SelectApp)` on the SDK module) so flushes auto-acknowledge without a
    real VIP API. Explicit staging URLs use live auth/HTTP; production remains
-   disabled while its host is `REPLACE_ME_PRODUCTION`.
+   disabled while its host is `REPLACE_ME_PRODUCTION`. Debug auto-ack drains
+   Queued on success and does **not** dead-letter.
 
 ## Bindings
 
-| Section        | Snapshot                  | Change callback                  |
-| -------------- | ------------------------- | -------------------------------- |
-| In range       | `currentBeacons`          | `onActiveBeaconsChanged`         |
-| Open summaries | `currentOpenWindows`      | `onOpenWindowsChanged`           |
-| Queued         | `pendingReports()`        | `onPendingReportsChanged`        |
-| Stop finalize  | `isStopFinalizePending`   | `onStopFinalizePendingChanged`   |
+| Section        | Snapshot                | Change callback                |
+| -------------- | ----------------------- | ------------------------------ |
+| In range       | `currentBeacons`        | `onActiveBeaconsChanged`       |
+| Open summaries | `currentOpenWindows`    | `onOpenWindowsChanged`         |
+| Queued         | `pendingReports()`      | `onPendingReportsChanged`      |
+| Dead letter    | `deadLetteredReports()` | `onDeadLetteredReportsChanged` |
+| Stop finalize  | `isStopFinalizePending` | `onStopFinalizePendingChanged` |
 
 ### Start gating
 
@@ -50,7 +56,9 @@ while the durable finalize batch is still in flight; wait for the flag.
 ### In range (`ActiveBeacon`)
 
 Show: major, minor, RSSI (dBm), last observed time.  
-Do not treat presence as “report ready.”
+Do not treat presence as “report ready.”  
+Rows are ordered by UUID → major → minor from AppSupport (stable when RSSI
+updates); do not re-sort in the client.
 
 ### Open summaries (`OpenBeaconWindow`)
 
@@ -62,9 +70,14 @@ window start, latest sighting time, and roughly how many seconds remain in the
 
 Show: major, minor, best RSSI, observation count, optional location,
 `windowStartedAt`, `latestTimestamp`, `queuedAt` (age vs ~5 minute max-queue-age).  
-List is FIFO. Offline or API failures leave items here; the SDK retries (15s →
-double → cap 300s after a failed attempt; offline skips without backoff). There
-is no separate “retrying” status in AppSupport today — still show as queued.
+List is FIFO. Offline or retryable API failures leave items here; the SDK retries
+(15s → double → cap 300s after a failed attempt; offline skips without backoff).
+There is no separate “retrying” status in AppSupport today — still show as queued.
+
+### Dead letter (`PendingBeaconReport`)
+
+Same row fields as Queued. These will **not** retry. `clearPendingReports()`
+clears pending only and does not empty Dead letter.
 
 ## Explicit non-goals
 
@@ -77,14 +90,18 @@ is no separate “retrying” status in AppSupport today — still show as queue
 ## Acceptance checks
 
 - Sighting a Select beacon updates **In range** and **Open summaries**.
+- In range order stays UUID → major → minor across RSSI refreshes.
 - After ~60s continuous presence or ~30s absence, a report moves to **Queued**
   and the open window clears or rolls over.
 - With debug auto-ack (or a real acknowledging transport), after a flush the
-  queued row disappears via `onPendingReportsChanged`.
-- Relaunch with pending disk records still shows them after `pendingReports()`.
+  queued row disappears via `onPendingReportsChanged` (no Dead letter entry).
+- After a poison / max-attempt dead-letter, the item leaves Queued and appears
+  under Dead letter via `onDeadLetteredReportsChanged`.
+- Relaunch with pending or dead-letter disk records still shows them after the
+  corresponding async load.
 - Calling `stop()` with an open window sets `isStopFinalizePending == true`
   while open windows are already empty; the flag clears only after durable
   enqueue settles. Start remains gated until then.
 - **Clear Queue** (or `clearPendingReports()`) is available only when detection
   is stopped and `isStopFinalizePending == false`. It empties durable pending
-  reports, including recovering an unreadable queue file.
+  reports, including recovering an unreadable queue file; Dead letter is unchanged.

@@ -25,6 +25,9 @@ public final class SelectBeaconSDK {
     public var onSelectPendingReportsChanged: (([SelectPendingBeaconReport]) -> Void)?
 
     @_spi(SelectApp)
+    public var onSelectDeadLetteredReportsChanged: (([SelectPendingBeaconReport]) -> Void)?
+
+    @_spi(SelectApp)
     public var onSelectOpenWindowsChanged: (([SelectOpenBeaconWindow]) -> Void)?
 
     /// True while a `stop()`-initiated finalize enqueue is still in flight.
@@ -284,6 +287,7 @@ public final class SelectBeaconSDK {
                 deviceIdentifier: deviceIdentifier,
                 onQueueAcknowledged: { [weak self] in
                     await self?.publishPendingReportsSnapshot()
+                    await self?.publishDeadLetteredReportsSnapshot()
                 }
             )
             if let lifecycleObserver {
@@ -491,6 +495,13 @@ public final class SelectBeaconSDK {
         return records.map(\.pendingReport)
     }
 
+    @_spi(SelectApp)
+    public func selectDeadLetteredReports() async throws -> [SelectPendingBeaconReport] {
+        guard let queue = resolvedQueue() else { return [] }
+        let records = try await queue.deadLetteredRecords()
+        return records.map(\.pendingReport)
+    }
+
     /// Empties the durable pending queue and publishes an empty AppSupport snapshot.
     ///
     /// Refuses while detection intent is on or a stop-finalize enqueue is still
@@ -587,6 +598,17 @@ public final class SelectBeaconSDK {
                 return
             }
             onSelectPendingReportsChanged?(reports)
+        } catch {
+            recordQueueFailure(error, forceUnreadable: true)
+        }
+    }
+
+    /// Publishes the dead-letter snapshot after upload acknowledgement or
+    /// dead-letter. Quietly degrades on unreadable store, same as pending.
+    private func publishDeadLetteredReportsSnapshot() async {
+        do {
+            let reports = try await selectDeadLetteredReports()
+            onSelectDeadLetteredReportsChanged?(reports)
         } catch {
             recordQueueFailure(error, forceUnreadable: true)
         }

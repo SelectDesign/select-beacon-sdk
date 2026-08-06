@@ -31,6 +31,40 @@ final class ActiveBeaconStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.map(\.minor), [43])
     }
 
+    func testSnapshotOrdersByUUIDThenMajorThenMinor() {
+        var store = ActiveBeaconStore()
+        let otherUUID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        store.record(
+            BeaconObservation(uuid: uuid, major: 2, minor: 9, rssi: -50, observedAt: now)
+        )
+        store.record(
+            BeaconObservation(uuid: otherUUID, major: 1, minor: 1, rssi: -60, observedAt: now)
+        )
+        store.record(
+            BeaconObservation(uuid: uuid, major: 1, minor: 5, rssi: -55, observedAt: now)
+        )
+        store.record(
+            BeaconObservation(uuid: uuid, major: 1, minor: 2, rssi: -40, observedAt: now)
+        )
+
+        let snapshot = store.snapshot
+        XCTAssertEqual(
+            snapshot.map { "\($0.uuid.uuidString)-\($0.major)-\($0.minor)" },
+            [
+                "\(uuid.uuidString)-1-2",
+                "\(uuid.uuidString)-1-5",
+                "\(uuid.uuidString)-2-9",
+                "\(otherUUID.uuidString)-1-1",
+            ]
+        )
+
+        store.record(
+            BeaconObservation(uuid: uuid, major: 1, minor: 2, rssi: -10, observedAt: now.addingTimeInterval(1))
+        )
+        XCTAssertEqual(store.snapshot.map(\.minor), [2, 5, 9, 1])
+        XCTAssertEqual(store.snapshot.first(where: { $0.minor == 2 })?.rssi, -10)
+    }
+
     private func observation(rssi: Int, at date: Date) -> BeaconObservation {
         BeaconObservation(
             uuid: uuid,

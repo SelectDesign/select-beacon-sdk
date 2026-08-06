@@ -157,14 +157,20 @@ RSSI `0` is Core Location's unknown-value sentinel and is ignored.
 application:
 
 - `currentBeacons` and `onActiveBeaconsChanged` are derived from
-  `ActiveBeaconStore`, keyed by `(UUID, major, minor)`. Every valid observation
-  refreshes the stored RSSI and timestamp. A beacon expires after the shared
-  30-second absence timeout; stopping ranging clears the active snapshot.
+  `ActiveBeaconStore`, keyed by `(UUID, major, minor)`. Snapshots are ordered
+  by UUID, then major, then minor so list UIs stay stable when only RSSI or
+  last-seen changes. Every valid observation refreshes the stored RSSI and
+  timestamp. A beacon expires after the shared 30-second absence timeout;
+  stopping ranging clears the active snapshot.
 - `currentOpenWindows` and `onOpenWindowsChanged` expose in-progress
   observation-window aggregates. `stop()` publishes an empty open-window
   snapshot synchronously, before durable enqueue finishes.
 - `pendingReports()` and `onPendingReportsChanged` read the complete FIFO
   durable queue. They include records written during a prior app launch.
+- `deadLetteredReports()` and `onDeadLetteredReportsChanged` read the durable
+  dead-letter store (non-retryable failure or max upload attempts). Same
+  snapshot model as pending; separate list; not re-uploaded.
+  `clearPendingReports()` clears pending only.
 - `isStopFinalizePending` and `onStopFinalizePendingChanged` track whether a
   `stop()`-initiated finalize enqueue is still in flight. Hosts must gate Start
   on this flag becoming `false`; empty open windows alone are not sufficient.
@@ -216,9 +222,9 @@ part of the standard public API; Select pending reports may include it.
 `DurableDetectionQueue.swift` contains the upload queue foundation:
 
 - `QueuedDetection`: Codable persisted representation of a reportable beacon.
-- `DurableDetectionQueue`: enqueue, batch retrieval, acknowledgement, and clear
-  contract. Its operations are asynchronous so callers do not run file I/O on
-  the main actor.
+- `DurableDetectionQueue`: enqueue, batch retrieval, acknowledgement, clear,
+  and dead-letter contract. Its operations are asynchronous so callers do not
+  run file I/O on the main actor.
 - `FileDetectionQueue`: actor-isolated, JSON file-backed implementation with
   atomic writes.
 - `FileStoring`: file I/O seam for error and relaunch tests.
@@ -274,7 +280,7 @@ unreliable mobile client):
   online without coupling capture success to a completed HTTP round trip or a
   full queue drain.
 - **Guaranteed-eventual delivery** (at-least-once) — the durable queue plus
-  retry/dead-letter and wire `idempotency-key` fit a crowdsourced, delay-tolerant
+  retry/dead-letter and wire `idempotency_key` fit a crowdsourced, delay-tolerant
   system where the client is often unreliable and the backend can dedupe.
 
 **Non-goals of the pattern:** never transmit per raw ranging event; never let
@@ -336,12 +342,14 @@ and emit `uploadDeadLettered`. The pending queue is bounded by `maxQueueSize`
 (500) and `maxRecordAge` (7 days); eviction emits `durableQueueEvicted`.
 
 On successful acknowledgement: backoff **resets** to 15 seconds. Records stay
-durable until acknowledged or dead-lettered; the Select pending-report UI still
-shows pending items as queued (no separate “retrying” status yet).
+durable until acknowledged or dead-lettered. The Select pending-report UI still
+shows pending items as queued (no separate “retrying” status yet). AppSupport
+`onPendingReportsChanged` and `onDeadLetteredReportsChanged` both refresh after
+acknowledgement and after dead-letter.
 
 `AuthProvider.validToken()` is called per batch (plus one refresh on ingest
-401/403). Successful acknowledgement notifies `onSelectPendingReportsChanged`
-with the remaining FIFO snapshot.
+401/403). Successful acknowledgement and dead-letter notify the pending and
+dead-letter SPI snapshots with complete replacement lists.
 
 `UploadInterfaces.swift` defines the upload seams:
 
@@ -351,12 +359,12 @@ with the remaining FIFO snapshot.
 - `UploadResponse` models a successful acknowledgement.
 
 `BeaconUploadPayload.swift` defines the confirmed ingestion body as
-`{ "detections": [ { "uuid": …, "best-rssi-dbm": …, … } ] }`
-with kebab-case keys `uuid`, `major`, `minor`, `best-rssi-dbm`,
-`observations`, `lat`, `lng`, `first-seen`, `last-seen`, `device-id`, and
-`idempotency-key`
-(`UIDevice.identifierForVendor`). `first-seen` maps from `windowStartedAt` and
-`last-seen` from `latestTimestamp`. `idempotency-key` is the durable queue
+`{ "detections": [ { "uuid": …, "best_rssi_dbm": …, … } ] }`
+with snake_case keys `uuid`, `major`, `minor`, `best_rssi_dbm`,
+`observations`, `lat`, `lng`, `first_seen`, `last_seen`, `device_id`, and
+`idempotency_key`
+(`UIDevice.identifierForVendor`). `first_seen` maps from `windowStartedAt` and
+`last_seen` from `latestTimestamp`. `idempotency_key` is the durable queue
 record UUID and is stable across retries so the backend can dedupe at-least-once
 re-sends. Missing location encodes `lat`/`lng`
 as JSON `null`. On HTTP **200** the transport acknowledges the entire posted
@@ -367,8 +375,8 @@ and retried with backoff.
 
 Auth and ingest share the configured environment host:
 
-- Token broker: `POST {base}/ingest/auth/v1` with kebab-case `app-key`;
-  response `access-token` / `expires-in` (**currently paused** —
+- Token broker: `POST {base}/ingest/auth/v1` with snake_case `app_key`;
+  response `access_token` / `expires_in` (**currently paused** —
   `UploadAuthentication.isEnabled` is `false`; ingest posts without Bearer auth
   until the broker is ready)
 - Ingest: `POST {base}/ingest/sdk/v1/detections` with
@@ -471,8 +479,8 @@ physical iPhone/iPad validation checklist.
 | `Detection/CoreLocationProvider.swift`                   | Hybrid coarse / significant-change location                  |
 | `Persistence/DurableDetectionQueue.swift`                | Actor-isolated persisted detection queue                     |
 | `Networking/UploadInterfaces.swift`                      | Auth/transport upload contracts                              |
-| `Networking/BeaconUploadPayload.swift`                   | `{ detections: [flat objects…] }` encoder + kebab-case keys  |
-| `Networking/DeviceIdentifying.swift`                     | IDFV (`device-id`) seam for upload stamping                  |
+| `Networking/BeaconUploadPayload.swift`                   | `{ detections: [flat objects…] }` encoder + snake_case keys  |
+| `Networking/DeviceIdentifying.swift`                     | IDFV (`device_id`) seam for upload stamping                  |
 | `Networking/HTTPIngestUploadTransport.swift`             | Live ingest POST with Bearer auth                            |
 | `Networking/HTTPIngestStatusClassifier.swift`            | HTTP status → retry / dead-letter / refresh classification   |
 | `Networking/UploadFailurePolicy.swift`                   | Maps transport/auth errors to flush outcomes                 |
@@ -502,5 +510,5 @@ physical iPhone/iPad validation checklist.
   Select's token broker with the configured app key only (`/ingest/auth/v1` on
   the environment host).
 - Do not invent alternate ingest paths; use `/ingest/sdk/v1/detections` with a
-  top-level `detections` array of flat kebab-case detection objects (no
+  top-level `detections` array of flat snake_case detection objects (no
   JSON:API `type`/`attributes` wrapper).

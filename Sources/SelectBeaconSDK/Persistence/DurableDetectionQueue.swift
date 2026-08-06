@@ -11,7 +11,7 @@ struct EnqueueResult: Equatable, Sendable {
 ///
 /// Separate from live ranging models: includes a generated queue-record ID and
 /// window aggregates so the upload coordinator can retry and acknowledge one
-/// durable record. `id` is also the wire `idempotency-key` and must not change
+/// durable record. `id` is also the wire `idempotency_key` and must not change
 /// across retries.
 struct QueuedDetection: Codable, Equatable, Sendable {
     let id: UUID

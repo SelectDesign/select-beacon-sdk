@@ -18,6 +18,7 @@ private final class BeaconTestModel: ObservableObject {
     @Published var activeBeacons: [ActiveBeacon] = []
     @Published var openWindows: [OpenBeaconWindow] = []
     @Published var pendingReports: [PendingBeaconReport] = []
+    @Published var deadLetteredReports: [PendingBeaconReport] = []
     @Published var isStopFinalizePending = false
     /// Host intent to run detection (Start tapped, Stop not yet tapped).
     @Published private(set) var wantsRunning = false
@@ -40,6 +41,9 @@ private final class BeaconTestModel: ObservableObject {
         support.onPendingReportsChanged = { [weak self] reports in
             self?.pendingReports = reports
         }
+        support.onDeadLetteredReportsChanged = { [weak self] reports in
+            self?.deadLetteredReports = reports
+        }
         support.onStopFinalizePendingChanged = { [weak self] pending in
             self?.isStopFinalizePending = pending
         }
@@ -60,6 +64,7 @@ private final class BeaconTestModel: ObservableObject {
         Task {
             do {
                 pendingReports = try await support.pendingReports()
+                deadLetteredReports = try await support.deadLetteredReports()
             } catch {
                 loadError = String(describing: error)
             }
@@ -144,6 +149,26 @@ private struct BeaconTestView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(model.pendingReports, id: \.id) { report in
+                            BeaconIdentityRow(
+                                major: report.major,
+                                minor: report.minor,
+                                detail: "Best RSSI \(report.bestRSSI) · \(report.observationCount) sightings",
+                                caption: "Queued \(report.queuedAt.formatted())",
+                                locationText: locationCaption(report.location, includeAccuracy: false)
+                            )
+                        }
+                    }
+                }
+
+                Section("Dead letter") {
+                    Text("Not re-uploaded after non-retryable failure or max attempts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if model.deadLetteredReports.isEmpty {
+                        Text("None")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(model.deadLetteredReports, id: \.id) { report in
                             BeaconIdentityRow(
                                 major: report.major,
                                 minor: report.minor,

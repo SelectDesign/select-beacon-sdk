@@ -6,7 +6,7 @@ final class BeaconUploadPayloadTests: XCTestCase {
     private let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
     private let deviceId = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 
-    func testEncodeDocumentUsesFlatDetectionsAndKebabCaseKeys() throws {
+    func testEncodeDocumentUsesFlatDetectionsAndSnakeCaseKeys() throws {
         let detection = QueuedDetection(
             uuid: fleetUUID,
             major: 1,
@@ -33,20 +33,20 @@ final class BeaconUploadPayloadTests: XCTestCase {
         XCTAssertNil(item["type"])
         XCTAssertNil(item["attributes"])
         XCTAssertEqual(Set(item.keys), [
-            "uuid", "major", "minor", "best-rssi-dbm", "observations",
-            "lat", "lng", "first-seen", "last-seen", "device-id", "idempotency-key",
+            "uuid", "major", "minor", "best_rssi_dbm", "observations",
+            "lat", "lng", "first_seen", "last_seen", "device_id", "idempotency_key",
         ])
         XCTAssertEqual(item["uuid"] as? String, fleetUUID.uuidString)
         XCTAssertEqual(item["major"] as? Int, 1)
         XCTAssertEqual(item["minor"] as? Int, 42)
-        XCTAssertEqual(item["best-rssi-dbm"] as? Int, -55)
+        XCTAssertEqual(item["best_rssi_dbm"] as? Int, -55)
         XCTAssertEqual(item["observations"] as? Int, 4)
         XCTAssertEqual(item["lat"] as? Double, 40.7128)
         XCTAssertEqual(item["lng"] as? Double, -74.006)
-        XCTAssertEqual(item["device-id"] as? String, deviceId)
-        XCTAssertEqual(item["idempotency-key"] as? String, detection.id.uuidString)
-        XCTAssertEqual(item["first-seen"] as? String, "2023-11-14T22:12:50Z")
-        XCTAssertEqual(item["last-seen"] as? String, "2023-11-14T22:13:20Z")
+        XCTAssertEqual(item["device_id"] as? String, deviceId)
+        XCTAssertEqual(item["idempotency_key"] as? String, detection.id.uuidString)
+        XCTAssertEqual(item["first_seen"] as? String, "2023-11-14T22:12:50Z")
+        XCTAssertEqual(item["last_seen"] as? String, "2023-11-14T22:13:20Z")
     }
 
     func testEncodeRecordWithoutLocationUsesNullLatLng() throws {
@@ -69,7 +69,7 @@ final class BeaconUploadPayloadTests: XCTestCase {
         let item = try XCTUnwrap(detections.first)
         XCTAssertTrue(item["lat"] is NSNull)
         XCTAssertTrue(item["lng"] is NSNull)
-        XCTAssertEqual(item["device-id"] as? String, deviceId)
+        XCTAssertEqual(item["device_id"] as? String, deviceId)
     }
 
     func testEncodeRejectsNilOrEmptyDeviceId() {

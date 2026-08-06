@@ -1,6 +1,6 @@
 import Foundation
 
-/// One detection in the ingest body (kebab-case on the wire).
+/// One detection in the ingest body (snake_case on the wire).
 ///
 /// `idempotencyKey` is the durable queue record id. It is stable across retries
 /// so the ingest API can dedupe at-least-once re-sends.
@@ -22,14 +22,14 @@ struct BeaconUploadDetection: Encodable, Equatable, Sendable {
         case uuid
         case major
         case minor
-        case bestRssiDbm = "best-rssi-dbm"
+        case bestRssiDbm = "best_rssi_dbm"
         case observations
         case lat
         case lng
-        case firstSeen = "first-seen"
-        case lastSeen = "last-seen"
-        case deviceId = "device-id"
-        case idempotencyKey = "idempotency-key"
+        case firstSeen = "first_seen"
+        case lastSeen = "last_seen"
+        case deviceId = "device_id"
+        case idempotencyKey = "idempotency_key"
     }
 
     init(detection: QueuedDetection, deviceId: String) {

@@ -153,7 +153,7 @@ struct APIEndpoint: Equatable {
 
 /// Configuration supplied internally to the SDK's token-broker auth provider.
 ///
-/// The provider sends `app-key` to this endpoint. No Auth0 client secret is held
+/// The provider sends `app_key` to this endpoint. No Auth0 client secret is held
 /// or transmitted by the SDK.
 struct TokenBrokerConfiguration: Equatable {
     let appKey: String

@@ -13,9 +13,10 @@ public final class SelectBeaconAppSupport {
 
     /// Beacons observed within the SDK's absence timeout.
     ///
-    /// This is a synchronous in-memory snapshot. It is appropriate for
-    /// rendering the current UI, but is not a history and does not imply that
-    /// the beacon produced an API report.
+    /// This is a synchronous in-memory snapshot ordered by UUID, then major,
+    /// then minor so list UIs stay stable when only RSSI or last-seen changes.
+    /// It is appropriate for rendering the current UI, but is not a history and
+    /// does not imply that the beacon produced an API report.
     public private(set) var currentBeacons: [ActiveBeacon]
 
     /// Open observation windows with running aggregates (not yet queued).
@@ -29,8 +30,9 @@ public final class SelectBeaconAppSupport {
 
     /// Called with a complete replacement snapshot whenever beacon presence changes.
     ///
-    /// Register this before starting the SDK, then also read `currentBeacons`
-    /// immediately to avoid missing state that existed before registration.
+    /// Snapshots are ordered by UUID, then major, then minor. Register this
+    /// before starting the SDK, then also read `currentBeacons` immediately to
+    /// avoid missing state that existed before registration.
     public var onActiveBeaconsChanged: (([ActiveBeacon]) -> Void)?
 
     /// Called whenever open observation-window aggregates change.
@@ -42,6 +44,15 @@ public final class SelectBeaconAppSupport {
     /// `pendingReports()` during application startup to load records persisted
     /// by an earlier process.
     public var onPendingReportsChanged: (([PendingBeaconReport]) -> Void)?
+
+    /// Called with the complete dead-lettered queue after upload ack or dead-letter.
+    ///
+    /// Dead-lettered reports are retained for diagnostics and are not
+    /// re-uploaded. This is a change notification, not an initial replay. Call
+    /// `deadLetteredReports()` during application startup to load records
+    /// persisted by an earlier process. `clearPendingReports()` does not clear
+    /// dead letters.
+    public var onDeadLetteredReportsChanged: (([PendingBeaconReport]) -> Void)?
 
     /// Called whenever `isStopFinalizePending` changes.
     ///
@@ -67,6 +78,9 @@ public final class SelectBeaconAppSupport {
         sdk.onSelectPendingReportsChanged = { [weak self] reports in
             self?.onPendingReportsChanged?(reports.map { PendingBeaconReport($0) })
         }
+        sdk.onSelectDeadLetteredReportsChanged = { [weak self] reports in
+            self?.onDeadLetteredReportsChanged?(reports.map { PendingBeaconReport($0) })
+        }
         sdk.onSelectStopFinalizePendingChanged = { [weak self] pending in
             self?.publishStopFinalizePending(pending)
         }
@@ -82,11 +96,23 @@ public final class SelectBeaconAppSupport {
         return reports.map { PendingBeaconReport($0) }
     }
 
+    /// Returns reports removed from the pending FIFO after non-retryable failure
+    /// or max upload attempts.
+    ///
+    /// Dead-lettered records are not re-uploaded. `clearPendingReports()` does
+    /// not clear this list. The method is async and may throw for the same
+    /// durable-store reasons as `pendingReports()`.
+    public func deadLetteredReports() async throws -> [PendingBeaconReport] {
+        let reports = try await sdk.selectDeadLetteredReports()
+        return reports.map { PendingBeaconReport($0) }
+    }
+
     /// Empties the durable pending queue and publishes `onPendingReportsChanged([])`.
     ///
     /// Hosts must stop detection first and wait until `isStopFinalizePending`
     /// is false. This overwrites corrupted queue payloads so an unreadable
-    /// queue can be recovered without deleting the app.
+    /// queue can be recovered without deleting the app. Dead-lettered reports
+    /// are left unchanged.
     public func clearPendingReports() async throws {
         do {
             try await sdk.selectClearPendingReports()
