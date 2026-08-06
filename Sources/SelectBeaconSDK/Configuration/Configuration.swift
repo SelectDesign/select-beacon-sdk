@@ -120,7 +120,7 @@ struct APIEndpoint: Equatable {
         url(path: "/ingest/auth/v1")
     }
 
-    /// `POST` target for JSON:API beacon ingest.
+    /// `POST` target for beacon ingest.
     var ingestURL: URL? {
         url(path: "/ingest/sdk/v1/detections")
     }

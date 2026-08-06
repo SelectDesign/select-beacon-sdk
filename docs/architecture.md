@@ -351,14 +351,14 @@ with the remaining FIFO snapshot.
 - `UploadResponse` models a successful acknowledgement.
 
 `BeaconUploadPayload.swift` defines the confirmed ingestion body as
-`{ "detections": [ { "type": "sdk_beacon", "attributes": { … } } ] }`
-with kebab-case attribute keys `uuid`, `major`, `minor`, `best-rssi-dbm`,
+`{ "detections": [ { "uuid": …, "best-rssi-dbm": …, … } ] }`
+with kebab-case keys `uuid`, `major`, `minor`, `best-rssi-dbm`,
 `observations`, `lat`, `lng`, `first-seen`, `last-seen`, `device-id`, and
 `idempotency-key`
 (`UIDevice.identifierForVendor`). `first-seen` maps from `windowStartedAt` and
 `last-seen` from `latestTimestamp`. `idempotency-key` is the durable queue
 record UUID and is stable across retries so the backend can dedupe at-least-once
-re-sends. Client resource `id` is omitted. Missing location encodes `lat`/`lng`
+re-sends. Missing location encodes `lat`/`lng`
 as JSON `null`. On HTTP **200** the transport acknowledges the entire posted
 batch using those local IDs. Eddystone `instanceId` is out of scope
 (Core Location iBeacon only). `deviceId` is resolved at upload time; if IDFV is
@@ -423,7 +423,7 @@ The tests are split by responsibility:
   legacy JSON migration, and environment isolation.
 - `Tests/SelectBeaconSDKTests/Networking/BeaconUploadPayloadTests.swift`,
   `HTTPIngestUploadTransportTests.swift`, and `APIEndpointURLTests.swift` cover
-  the JSON:API body and concrete endpoint/transport behavior.
+  the flat JSON ingest body and concrete endpoint/transport behavior.
 - `Tests/SelectBeaconSDKTests/Networking/TokenBrokerAuthProviderTests.swift`
   covers cached token retrieval and refresh behavior without real networking.
 - `Tests/SelectBeaconSDKTests/Networking/UploadCoordinatorTests.swift`
@@ -471,7 +471,7 @@ physical iPhone/iPad validation checklist.
 | `Detection/CoreLocationProvider.swift`                   | Hybrid coarse / significant-change location                  |
 | `Persistence/DurableDetectionQueue.swift`                | Actor-isolated persisted detection queue                     |
 | `Networking/UploadInterfaces.swift`                      | Auth/transport upload contracts                              |
-| `Networking/BeaconUploadPayload.swift`                   | `{ detections: [sdk_beacon…] }` encoder + kebab-case attrs   |
+| `Networking/BeaconUploadPayload.swift`                   | `{ detections: [flat objects…] }` encoder + kebab-case keys  |
 | `Networking/DeviceIdentifying.swift`                     | IDFV (`device-id`) seam for upload stamping                  |
 | `Networking/HTTPIngestUploadTransport.swift`             | Live ingest POST with Bearer auth                            |
 | `Networking/HTTPIngestStatusClassifier.swift`            | HTTP status → retry / dead-letter / refresh classification   |
@@ -501,5 +501,6 @@ physical iPhone/iPad validation checklist.
 - Do not add an endpoint, payload, or Auth0 client secret to the SDK. Auth uses
   Select's token broker with the configured app key only (`/ingest/auth/v1` on
   the environment host).
-- Do not invent alternate ingest paths; use `/ingest/sdk/v1/detections` with JSON:API
-  `sdk_beacon` resources under a top-level `detections` array and kebab-case attributes.
+- Do not invent alternate ingest paths; use `/ingest/sdk/v1/detections` with a
+  top-level `detections` array of flat kebab-case detection objects (no
+  JSON:API `type`/`attributes` wrapper).

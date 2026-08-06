@@ -1,11 +1,10 @@
 import Foundation
 
-/// Attributes for one `sdk_beacon` resource (kebab-case on the wire).
+/// One detection in the ingest body (kebab-case on the wire).
 ///
 /// `idempotencyKey` is the durable queue record id. It is stable across retries
-/// so the ingest API can dedupe at-least-once re-sends. Backend must treat this
-/// key as the idempotency contract for `sdk_beacon` detections.
-struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
+/// so the ingest API can dedupe at-least-once re-sends.
+struct BeaconUploadDetection: Encodable, Equatable, Sendable {
     let uuid: UUID
     let major: Int
     let minor: Int
@@ -71,22 +70,9 @@ struct BeaconUploadAttributes: Encodable, Equatable, Sendable {
     }
 }
 
-/// One resource; JSON:API client `id` is intentionally omitted (use attributes.idempotency-key).
-struct BeaconUploadResource: Encodable, Equatable, Sendable {
-    static let resourceType = "sdk_beacon"
-
-    let type: String
-    let attributes: BeaconUploadAttributes
-
-    init(attributes: BeaconUploadAttributes) {
-        type = Self.resourceType
-        self.attributes = attributes
-    }
-}
-
 /// Document posted to `/ingest/sdk/v1/detections`.
 struct BeaconUploadDocument: Encodable, Equatable, Sendable {
-    let detections: [BeaconUploadResource]
+    let detections: [BeaconUploadDetection]
 }
 
 /// Builds the ingest body a live HTTP upload transport will POST.
@@ -110,15 +96,12 @@ struct BeaconUploadPayloadEncoder {
         from detections: [QueuedDetection],
         deviceId: String
     ) -> BeaconUploadDocument {
-        let resources = detections.map { detection in
-            BeaconUploadResource(
-                attributes: BeaconUploadAttributes(detection: detection, deviceId: deviceId)
-            )
-        }
-        return BeaconUploadDocument(detections: resources)
+        BeaconUploadDocument(
+            detections: detections.map { BeaconUploadDetection(detection: $0, deviceId: deviceId) }
+        )
     }
 
-    /// Encodes `{ "detections": [ sdk_beacon resources… ] }`.
+    /// Encodes `{ "detections": [ flat detection objects… ] }`.
     ///
     /// Throws `MissingDeviceIdentifier` when `deviceId` is nil or empty so the
     /// upload path never sends a body without a vendor device id.

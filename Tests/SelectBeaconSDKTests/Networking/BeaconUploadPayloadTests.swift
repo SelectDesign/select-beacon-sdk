@@ -6,7 +6,7 @@ final class BeaconUploadPayloadTests: XCTestCase {
     private let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
     private let deviceId = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 
-    func testEncodeDocumentUsesJSONAPIAndKebabCaseKeys() throws {
+    func testEncodeDocumentUsesFlatDetectionsAndKebabCaseKeys() throws {
         let detection = QueuedDetection(
             uuid: fleetUUID,
             major: 1,
@@ -27,27 +27,26 @@ final class BeaconUploadPayloadTests: XCTestCase {
         let json = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
-        let resources = try XCTUnwrap(json["detections"] as? [[String: Any]])
-        XCTAssertEqual(resources.count, 1)
-        let resource = try XCTUnwrap(resources.first)
-        XCTAssertEqual(resource["type"] as? String, "sdk_beacon")
-        XCTAssertNil(resource["id"])
-        let attributes = try XCTUnwrap(resource["attributes"] as? [String: Any])
-        XCTAssertEqual(Set(attributes.keys), [
+        let detections = try XCTUnwrap(json["detections"] as? [[String: Any]])
+        XCTAssertEqual(detections.count, 1)
+        let item = try XCTUnwrap(detections.first)
+        XCTAssertNil(item["type"])
+        XCTAssertNil(item["attributes"])
+        XCTAssertEqual(Set(item.keys), [
             "uuid", "major", "minor", "best-rssi-dbm", "observations",
             "lat", "lng", "first-seen", "last-seen", "device-id", "idempotency-key",
         ])
-        XCTAssertEqual(attributes["uuid"] as? String, fleetUUID.uuidString)
-        XCTAssertEqual(attributes["major"] as? Int, 1)
-        XCTAssertEqual(attributes["minor"] as? Int, 42)
-        XCTAssertEqual(attributes["best-rssi-dbm"] as? Int, -55)
-        XCTAssertEqual(attributes["observations"] as? Int, 4)
-        XCTAssertEqual(attributes["lat"] as? Double, 40.7128)
-        XCTAssertEqual(attributes["lng"] as? Double, -74.006)
-        XCTAssertEqual(attributes["device-id"] as? String, deviceId)
-        XCTAssertEqual(attributes["idempotency-key"] as? String, detection.id.uuidString)
-        XCTAssertEqual(attributes["first-seen"] as? String, "2023-11-14T22:12:50Z")
-        XCTAssertEqual(attributes["last-seen"] as? String, "2023-11-14T22:13:20Z")
+        XCTAssertEqual(item["uuid"] as? String, fleetUUID.uuidString)
+        XCTAssertEqual(item["major"] as? Int, 1)
+        XCTAssertEqual(item["minor"] as? Int, 42)
+        XCTAssertEqual(item["best-rssi-dbm"] as? Int, -55)
+        XCTAssertEqual(item["observations"] as? Int, 4)
+        XCTAssertEqual(item["lat"] as? Double, 40.7128)
+        XCTAssertEqual(item["lng"] as? Double, -74.006)
+        XCTAssertEqual(item["device-id"] as? String, deviceId)
+        XCTAssertEqual(item["idempotency-key"] as? String, detection.id.uuidString)
+        XCTAssertEqual(item["first-seen"] as? String, "2023-11-14T22:12:50Z")
+        XCTAssertEqual(item["last-seen"] as? String, "2023-11-14T22:13:20Z")
     }
 
     func testEncodeRecordWithoutLocationUsesNullLatLng() throws {
@@ -66,11 +65,11 @@ final class BeaconUploadPayloadTests: XCTestCase {
         let json = try XCTUnwrap(
             JSONSerialization.jsonObject(with: data) as? [String: Any]
         )
-        let resources = try XCTUnwrap(json["detections"] as? [[String: Any]])
-        let attributes = try XCTUnwrap(resources.first?["attributes"] as? [String: Any])
-        XCTAssertTrue(attributes["lat"] is NSNull)
-        XCTAssertTrue(attributes["lng"] is NSNull)
-        XCTAssertEqual(attributes["device-id"] as? String, deviceId)
+        let detections = try XCTUnwrap(json["detections"] as? [[String: Any]])
+        let item = try XCTUnwrap(detections.first)
+        XCTAssertTrue(item["lat"] is NSNull)
+        XCTAssertTrue(item["lng"] is NSNull)
+        XCTAssertEqual(item["device-id"] as? String, deviceId)
     }
 
     func testEncodeRejectsNilOrEmptyDeviceId() {
@@ -112,16 +111,15 @@ final class BeaconUploadPayloadTests: XCTestCase {
             deviceId: deviceId
         )
         XCTAssertEqual(document.detections.count, 1)
-        XCTAssertEqual(document.detections[0].type, "sdk_beacon")
-        XCTAssertEqual(document.detections[0].attributes.uuid, fleetUUID)
-        XCTAssertEqual(document.detections[0].attributes.bestRssiDbm, -62)
-        XCTAssertEqual(document.detections[0].attributes.firstSeen, timestamp)
-        XCTAssertEqual(document.detections[0].attributes.lastSeen, timestamp)
-        XCTAssertEqual(document.detections[0].attributes.observations, 2)
-        XCTAssertEqual(document.detections[0].attributes.deviceId, deviceId)
-        XCTAssertEqual(document.detections[0].attributes.idempotencyKey, detection.id.uuidString)
-        XCTAssertNil(document.detections[0].attributes.lat)
-        XCTAssertNil(document.detections[0].attributes.lng)
+        XCTAssertEqual(document.detections[0].uuid, fleetUUID)
+        XCTAssertEqual(document.detections[0].bestRssiDbm, -62)
+        XCTAssertEqual(document.detections[0].firstSeen, timestamp)
+        XCTAssertEqual(document.detections[0].lastSeen, timestamp)
+        XCTAssertEqual(document.detections[0].observations, 2)
+        XCTAssertEqual(document.detections[0].deviceId, deviceId)
+        XCTAssertEqual(document.detections[0].idempotencyKey, detection.id.uuidString)
+        XCTAssertNil(document.detections[0].lat)
+        XCTAssertNil(document.detections[0].lng)
     }
 
     func testIdempotencyKeyStableAcrossReencodesAndDistinctAcrossRecords() throws {
@@ -152,13 +150,13 @@ final class BeaconUploadPayloadTests: XCTestCase {
         let firstB = encoder.document(from: [first], deviceId: deviceId)
         let secondDoc = encoder.document(from: [second], deviceId: deviceId)
         XCTAssertEqual(
-            firstA.detections[0].attributes.idempotencyKey,
-            firstB.detections[0].attributes.idempotencyKey
+            firstA.detections[0].idempotencyKey,
+            firstB.detections[0].idempotencyKey
         )
-        XCTAssertEqual(firstA.detections[0].attributes.idempotencyKey, first.id.uuidString)
+        XCTAssertEqual(firstA.detections[0].idempotencyKey, first.id.uuidString)
         XCTAssertNotEqual(
-            firstA.detections[0].attributes.idempotencyKey,
-            secondDoc.detections[0].attributes.idempotencyKey
+            firstA.detections[0].idempotencyKey,
+            secondDoc.detections[0].idempotencyKey
         )
     }
 }

@@ -127,7 +127,7 @@ The adapter is a Select integration boundary, not a security boundary.
 
 Ingest and auth are implemented by the Select backend service
 [beacon-ingestor](https://github.com/SelectDesign/beacon-ingestor). This SDK
-posts to that service’s JSON:API endpoints on the configured environment host.
+posts to that service’s HTTP ingest endpoints on the configured environment host.
 
 Production is the default and requires no additional consumer configuration:
 
@@ -158,19 +158,17 @@ When a usable environment base URL is configured, each ingest body is posted to
 {
   "detections": [
     {
-      "type": "sdk_beacon",
-      "attributes": {
-        "uuid": "76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911",
-        "major": 1,
-        "minor": 42,
-        "best-rssi-dbm": -55,
-        "observations": 4,
-        "lat": 40.7128,
-        "lng": -74.006,
-        "first-seen": "2023-11-14T22:12:50Z",
-        "last-seen": "2023-11-14T22:13:20Z",
-        "device-id": "<identifierForVendor>"
-      }
+      "uuid": "76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911",
+      "major": 1,
+      "minor": 42,
+      "best-rssi-dbm": -55,
+      "observations": 4,
+      "lat": 40.7128,
+      "lng": -74.006,
+      "first-seen": "2023-11-14T22:12:50Z",
+      "last-seen": "2023-11-14T22:13:20Z",
+      "device-id": "<identifierForVendor>",
+      "idempotency-key": "<durable-queue-record-id>"
     }
   ]
 }
@@ -180,8 +178,8 @@ When a usable environment base URL is configured, each ingest body is posted to
 `first-seen` / `last-seen` are the observation window start and latest sighting.
 `lat`/`lng` may be `null` when no location fix was available. Auth uses the same
 host at `/ingest/auth/v1` with kebab-case `app-key`, and ingest sends
-`Authorization: Bearer {token}`. HTTP 200 clears the entire uploaded batch from
-the durable queue.
+`Authorization: Bearer {token}` when auth is enabled. HTTP 200 clears the entire
+uploaded batch from the durable queue.
 
 ## Host-owned permissions
 

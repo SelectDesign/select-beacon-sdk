@@ -89,8 +89,8 @@
 - Auth is `POST {base}/ingest/auth/v1` with `app-key`; responses use
   `access-token` and `expires-in`.
 - Ingest is `POST {base}/ingest/sdk/v1/detections` with body
-  `{ "detections": [ { "type": "sdk_beacon", "attributes": … } ] }`,
-  kebab-case attributes (including stable `idempotency-key`), and Bearer
+  `{ "detections": [ { "uuid": …, "best-rssi-dbm": …, … } ] }`,
+  kebab-case fields (including stable `idempotency-key`), and Bearer
   authorization. HTTP 200 acknowledges the posted batch. Backend must dedupe on
   `idempotency-key` for at-least-once re-sends.
 - The SDK obtains short-lived tokens using `appKey` only. It never holds or

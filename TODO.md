@@ -12,7 +12,7 @@ limitation.
 - [ ] Provision VIP (BizStride) and Select app keys against the token broker
       (`POST {base}/ingest/auth/v1`).
 - [ ] End-to-end staging upload: configure `.staging(baseURL:)`, detect a real
-      beacon, confirm JSON:API body lands in beacon-ingestor, HTTP 200 clears
+      beacon, confirm flat JSON body lands in beacon-ingestor, HTTP 200 clears
       the durable queue.
 - [ ] End-to-end production upload after the host URL is set (same path,
       production key + host).
@@ -93,7 +93,7 @@ limitation.
 ## Done recently (do not re-open unless product asks)
 
 - Observation-window aggregates and durable enqueue-on-close
-- JSON:API ingest attributes (`first-seen`, `last-seen`, `best-rssi-dbm`, …)
+- Flat JSON ingest fields (`first-seen`, `last-seen`, `best-rssi-dbm`, …)
 - Staging live auth (`/ingest/auth/v1`) + HTTP ingest (`/ingest/sdk/v1/detections`)
 - Upload coordinator (quiet debounce, max queue age, opportunistic full drain,
   bounded single-batch background wake flush, backoff)

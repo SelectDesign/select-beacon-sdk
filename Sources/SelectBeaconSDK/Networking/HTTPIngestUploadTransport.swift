@@ -11,7 +11,7 @@ enum HTTPIngestUploadError: Error, Equatable {
     case serverError(statusCode: Int)
 }
 
-/// Posts `{ "detections": [ sdk_beacon… ] }` to `/ingest/sdk/v1/detections`.
+/// Posts `{ "detections": [ … ] }` to `/ingest/sdk/v1/detections`.
 ///
 /// HTTP 200 acknowledges the entire posted batch (local queue IDs).
 @MainActor

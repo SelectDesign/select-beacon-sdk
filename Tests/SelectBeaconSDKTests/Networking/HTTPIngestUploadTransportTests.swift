@@ -76,10 +76,12 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         )
         let body = try XCTUnwrap(request.httpBody)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        let resources = try XCTUnwrap(json["detections"] as? [[String: Any]])
-        XCTAssertEqual(resources.count, 2)
-        XCTAssertEqual(resources.first?["type"] as? String, "sdk_beacon")
-        XCTAssertNil(resources.first?["id"])
+        let items = try XCTUnwrap(json["detections"] as? [[String: Any]])
+        XCTAssertEqual(items.count, 2)
+        XCTAssertNil(items.first?["type"])
+        XCTAssertNil(items.first?["attributes"])
+        XCTAssertEqual(items.first?["minor"] as? Int, 1)
+        XCTAssertEqual(items.first?["idempotency-key"] as? String, detections[0].id.uuidString)
     }
 
     func testNon200Throws() async {
