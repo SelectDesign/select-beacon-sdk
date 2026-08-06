@@ -23,7 +23,7 @@ description: >-
 - [ ] Inject time and I/O; pure stores take `now`.
 - [ ] If host-visible state changes, mirror on AppSupport (snapshot + change callback; seed on init).
 - [ ] Keep auth and ingest aligned with the confirmed endpoints and flat JSON
-      detections contract (snake_case wire keys; `/sdk/auth/v1` with
+      detections contract (snake_case wire keys; `/auth/v1` with
       `app_key`/`app_secret`; Authorization on ingest); production remains
       disabled while its host is the placeholder. Never log secrets or tokens.
 - [ ] Update docs when behavior or wire format changes (`architecture.md`, `decisions.md`, README / consumer prompt as needed).

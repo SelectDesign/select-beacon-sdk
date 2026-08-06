@@ -6,11 +6,11 @@ final class APIEndpointURLTests: XCTestCase {
         let endpoint = APIEndpoint(baseURL: "https://api.select.example.com")
         XCTAssertEqual(
             endpoint.authURL?.absoluteString,
-            "https://api.select.example.com/sdk/auth/v1"
+            "https://api.select.example.com/auth/v1"
         )
         XCTAssertEqual(
             endpoint.ingestURL?.absoluteString,
-            "https://api.select.example.com/ingest/sdk/v1/detections"
+            "https://api.select.example.com/sdk/v1/detections"
         )
         XCTAssertTrue(endpoint.isUsableHTTPBase)
     }
@@ -19,7 +19,7 @@ final class APIEndpointURLTests: XCTestCase {
         let endpoint = APIEndpoint(baseURL: "https://api.select.example.com/")
         XCTAssertEqual(
             endpoint.ingestURL?.absoluteString,
-            "https://api.select.example.com/ingest/sdk/v1/detections"
+            "https://api.select.example.com/sdk/v1/detections"
         )
     }
 
@@ -39,7 +39,7 @@ final class APIEndpointURLTests: XCTestCase {
         let tokenConfig = configuration.tokenBrokerConfiguration()
         XCTAssertEqual(
             tokenConfig?.tokenEndpoint.absoluteString,
-            "https://staging.select.example.com/sdk/auth/v1"
+            "https://staging.select.example.com/auth/v1"
         )
         XCTAssertEqual(tokenConfig?.appKey, "select-app-key")
         XCTAssertEqual(tokenConfig?.appSecret, "test-secret")

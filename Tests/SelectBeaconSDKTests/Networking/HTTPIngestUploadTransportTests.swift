@@ -45,7 +45,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         let client = FakeHTTPDataLoader()
         let detections = [makeDetection(minor: 1), makeDetection(minor: 2)]
         let transport = HTTPIngestUploadTransport(
-            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
+            ingestURL: URL(string: "https://api.select.example.com/sdk/v1/detections")!,
             httpClient: client,
             deviceIdentifier: FakeDeviceIdentifier()
         )
@@ -84,7 +84,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         let client = FakeHTTPDataLoader()
         client.statusCode = 500
         let transport = HTTPIngestUploadTransport(
-            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
+            ingestURL: URL(string: "https://api.select.example.com/sdk/v1/detections")!,
             httpClient: client,
             deviceIdentifier: FakeDeviceIdentifier()
         )
@@ -107,7 +107,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         client.statusCode = 429
         client.headerFields = ["Retry-After": "90"]
         let transport = HTTPIngestUploadTransport(
-            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
+            ingestURL: URL(string: "https://api.select.example.com/sdk/v1/detections")!,
             httpClient: client,
             deviceIdentifier: FakeDeviceIdentifier()
         )
@@ -129,7 +129,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         let client = FakeHTTPDataLoader()
         client.statusCode = 429
         let transport = HTTPIngestUploadTransport(
-            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
+            ingestURL: URL(string: "https://api.select.example.com/sdk/v1/detections")!,
             httpClient: client,
             deviceIdentifier: FakeDeviceIdentifier()
         )
@@ -151,7 +151,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         let client = FakeHTTPDataLoader()
         client.statusCode = 400
         let transport = HTTPIngestUploadTransport(
-            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
+            ingestURL: URL(string: "https://api.select.example.com/sdk/v1/detections")!,
             httpClient: client,
             deviceIdentifier: FakeDeviceIdentifier()
         )
@@ -172,7 +172,7 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
     func testMissingDeviceIdThrowsBeforeNetwork() async {
         let client = FakeHTTPDataLoader()
         let transport = HTTPIngestUploadTransport(
-            ingestURL: URL(string: "https://api.select.example.com/ingest/sdk/v1/detections")!,
+            ingestURL: URL(string: "https://api.select.example.com/sdk/v1/detections")!,
             httpClient: client,
             deviceIdentifier: FakeDeviceIdentifier(deviceId: nil)
         )

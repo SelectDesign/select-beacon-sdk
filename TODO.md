@@ -10,7 +10,7 @@ limitation.
 - [ ] Confirm and set the real production ingest host; replace
       `REPLACE_ME_PRODUCTION` in `APIEndpointDefaults` / configuration.
 - [ ] Provision VIP (BizStride) and Select app keys/secrets against the token
-      broker (`POST {base}/sdk/auth/v1`).
+      broker (`POST {base}/auth/v1`).
 - [ ] End-to-end staging upload: configure `.staging(baseURL:)` with
       `appKey`/`appSecret`, detect a real beacon, confirm flat JSON body lands
       in beacon-ingestor with Authorization, HTTP 200 clears the durable queue.
@@ -21,7 +21,7 @@ limitation.
       `first_seen`, `last_seen`, `device_id`, `idempotency_key`; snake_case)
       and that whole-batch ack on HTTP 200 is final. Backend must dedupe on
       `idempotency_key` (at-least-once delivery).
-- [x] Live ingest auth: `configure(appKey:appSecret:)` → `/sdk/auth/v1` →
+- [x] Live ingest auth: `configure(appKey:appSecret:)` → `/auth/v1` →
       `Authorization` on detections (auth pause removed).
 - [ ] VIP confirmation for background `URLSession` (Tier B) if system-completed
       uploads while suspended are required beyond opportunistic wake flushes.
@@ -105,8 +105,8 @@ limitation.
 
 - Observation-window aggregates and durable enqueue-on-close
 - Flat JSON ingest fields (`first_seen`, `last_seen`, `best_rssi_dbm`, …; snake_case)
-- Staging live auth (`/sdk/auth/v1` with app key + secret) + HTTP ingest
-  (`/ingest/sdk/v1/detections` with Authorization)
+- Staging live auth (`/auth/v1` with app key + secret) + HTTP ingest
+  (`/sdk/v1/detections` with Authorization)
 - Upload coordinator (quiet debounce, max queue age, opportunistic full drain,
   bounded single-batch background wake flush, backoff)
 - iBeacon region monitoring + ranging-on-wake (Always); When-In-Use remains

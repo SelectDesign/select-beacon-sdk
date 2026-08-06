@@ -120,12 +120,12 @@ struct APIEndpoint: Equatable {
 
     /// `POST` target for short-lived upload tokens.
     var authURL: URL? {
-        url(path: "/sdk/auth/v1")
+        url(path: "/auth/v1")
     }
 
     /// `POST` target for beacon ingest.
     var ingestURL: URL? {
-        url(path: "/ingest/sdk/v1/detections")
+        url(path: "/sdk/v1/detections")
     }
 
     /// True when `baseURL` is a usable http(s) absolute URL (not the production placeholder).

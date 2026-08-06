@@ -34,9 +34,9 @@ crowdsource locations of Select retail assets.
   upload; never block capture on the network). Background region-wake flushes
   are bounded to one batch; full drains use quiet debounce, max-age, lifecycle,
   connectivity, and cold-start triggers. A cancelled delivery session must
-  not emit delayed adapter updates. Upload auth is `{base}/sdk/auth/v1`
+  not emit delayed adapter updates. Upload auth is `{base}/auth/v1`
   (`app_key` + `app_secret` → short-lived token); ingest is
-  `{base}/ingest/sdk/v1/detections` with `Authorization` once a usable
+  `{base}/sdk/v1/detections` with `Authorization` once a usable
   environment host is configured.
 
 ## Safety requirements

@@ -148,14 +148,14 @@ SelectBeaconSDK.configure(
 ```
 
 Staging uses the live token-broker and HTTP ingest implementations when a usable
-base URL is configured. Auth is `POST {base}/sdk/auth/v1` with `app_key` /
+base URL is configured. Auth is `POST {base}/auth/v1` with `app_key` /
 `app_secret`; ingest sends `Authorization: Bearer {access_token}`.
 Replace the production placeholder before enabling production upload.
 Configuration cannot change after `start()`; stop and use a fresh process/session
 before switching environments.
 
 When a usable environment base URL is configured, each ingest body is posted to
-`{base}/ingest/sdk/v1/detections`:
+`{base}/sdk/v1/detections`:
 
 ```json
 {
@@ -180,7 +180,7 @@ When a usable environment base URL is configured, each ingest body is posted to
 `uuid` is the iBeacon proximity UUID. `device_id` is the vendor device ID (IDFV).
 `first_seen` / `last_seen` are the observation window start and latest sighting.
 `lat`/`lng` may be `null` when no location fix was available. Auth uses the same
-host at `/sdk/auth/v1` with snake_case `app_key` and `app_secret`, and ingest sends
+host at `/auth/v1` with snake_case `app_key` and `app_secret`, and ingest sends
 `Authorization: Bearer {token}` from the broker response. HTTP 200 clears the entire
 uploaded batch from the durable queue.
 

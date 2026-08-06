@@ -81,7 +81,7 @@
   at-least-once eventual delivery in a crowdsourced / delay-tolerant setting
   (see `architecture.md` §5b).
 - Live usable hosts always authenticate: `TokenBrokerAuthProvider` posts
-  `app_key` / `app_secret` to `/sdk/auth/v1`, caches `access_token` +
+  `app_key` / `app_secret` to `/auth/v1`, caches `access_token` +
   `token_type` + expiry in memory, and ingest attaches `Authorization`.
   There is no auth-pause kill-switch. Unusable production placeholder keeps
   deferred upload seams (no network).
@@ -96,9 +96,9 @@
   limits. 401/403 invalidates the token, refreshes once, and retries immediately.
   Other 4xx dead-letter the batch; retryable failures dead-letter after
   `maxUploadAttempts`. Pending queue size/age caps apply with eviction diagnostics.
-- Auth is `POST {base}/sdk/auth/v1` with `app_key` and `app_secret`; responses use
+- Auth is `POST {base}/auth/v1` with `app_key` and `app_secret`; responses use
   `access_token`, `token_type`, and `expires_in`.
-- Ingest is `POST {base}/ingest/sdk/v1/detections` with body
+- Ingest is `POST {base}/sdk/v1/detections` with body
   `{ "detections": [ { "uuid": …, "best_rssi_dbm": …, … } ] }`,
   snake_case fields (including stable `idempotency_key`), and
   `Authorization: {token_type} {access_token}`. HTTP 200 acknowledges the posted

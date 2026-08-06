@@ -92,7 +92,7 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
         clock: Clock,
         refreshSafetyMargin: TimeInterval = 60
     ) throws -> TokenBrokerAuthProvider {
-        guard let tokenEndpoint = URL(string: "https://api.select.example.com/sdk/auth/v1"),
+        guard let tokenEndpoint = URL(string: "https://api.select.example.com/auth/v1"),
               let identity = AppIdentity(appKey: "select-app-key", appSecret: "select-app-secret"),
               let configuration = TokenBrokerConfiguration(
                   identity: identity,

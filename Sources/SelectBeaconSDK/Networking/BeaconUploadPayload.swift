@@ -70,7 +70,7 @@ struct BeaconUploadDetection: Encodable, Equatable, Sendable {
     }
 }
 
-/// Document posted to `/ingest/sdk/v1/detections`.
+/// Document posted to `/sdk/v1/detections`.
 struct BeaconUploadDocument: Encodable, Equatable, Sendable {
     let detections: [BeaconUploadDetection]
 }

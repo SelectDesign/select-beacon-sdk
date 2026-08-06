@@ -380,9 +380,9 @@ and retried with backoff.
 
 Auth and ingest share the configured environment host:
 
-- Token broker: `POST {base}/sdk/auth/v1` with snake_case `app_key` and
+- Token broker: `POST {base}/auth/v1` with snake_case `app_key` and
   `app_secret`; response `access_token` / `token_type` / `expires_in`
-- Ingest: `POST {base}/ingest/sdk/v1/detections` with
+- Ingest: `POST {base}/sdk/v1/detections` with
   `Authorization: {token_type} {access_token}`, and
   `Content-Type` / `Accept`: `application/json`
 
@@ -510,7 +510,7 @@ physical iPhone/iPad validation checklist.
 - Do not read real time inside testable business logic.
 - Do not add an endpoint, payload, or Auth0 client secret to the SDK. Auth uses
   Select's token broker with the configured app key and app secret
-  (`/sdk/auth/v1` on the environment host). Never log credentials or tokens.
-- Do not invent alternate ingest paths; use `/ingest/sdk/v1/detections` with a
+  (`/auth/v1` on the environment host). Never log credentials or tokens.
+- Do not invent alternate ingest paths; use `/sdk/v1/detections` with a
   top-level `detections` array of flat snake_case detection objects (no
   JSON:API `type`/`attributes` wrapper).
