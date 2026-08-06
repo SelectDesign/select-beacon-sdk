@@ -68,11 +68,11 @@ final class HTTPIngestUploadTransportTests: XCTestCase {
         }
         XCTAssertEqual(
             request.value(forHTTPHeaderField: "Content-Type"),
-            HTTPIngestUploadTransport.jsonAPIContentType
+            HTTPIngestUploadTransport.jsonContentType
         )
         XCTAssertEqual(
             request.value(forHTTPHeaderField: "Accept"),
-            HTTPIngestUploadTransport.jsonAPIContentType
+            HTTPIngestUploadTransport.jsonContentType
         )
         let body = try XCTUnwrap(request.httpBody)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])

@@ -16,7 +16,7 @@ enum HTTPIngestUploadError: Error, Equatable {
 /// HTTP 200 acknowledges the entire posted batch (local queue IDs).
 @MainActor
 final class HTTPIngestUploadTransport: UploadTransport {
-    static let jsonAPIContentType = "application/vnd.api+json"
+    static let jsonContentType = "application/json"
 
     private let ingestURL: URL
     private let httpClient: HTTPDataLoading
@@ -59,8 +59,8 @@ final class HTTPIngestUploadTransport: UploadTransport {
 
         var request = URLRequest(url: ingestURL)
         request.httpMethod = "POST"
-        request.setValue(Self.jsonAPIContentType, forHTTPHeaderField: "Content-Type")
-        request.setValue(Self.jsonAPIContentType, forHTTPHeaderField: "Accept")
+        request.setValue(Self.jsonContentType, forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.jsonContentType, forHTTPHeaderField: "Accept")
         if UploadAuthentication.isEnabled, !bearerToken.isEmpty {
             request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         }

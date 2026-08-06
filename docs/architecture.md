@@ -373,7 +373,7 @@ Auth and ingest share the configured environment host:
   until the broker is ready)
 - Ingest: `POST {base}/ingest/sdk/v1/detections` with
   `Authorization: Bearer {token}` when auth is enabled, and
-  `Content-Type` / `Accept`: `application/vnd.api+json`
+  `Content-Type` / `Accept`: `application/json`
 
 `TokenBrokerAuthProvider.swift` provides the SDK-owned authentication
 implementation. It posts the configured app key to Select's token endpoint on
