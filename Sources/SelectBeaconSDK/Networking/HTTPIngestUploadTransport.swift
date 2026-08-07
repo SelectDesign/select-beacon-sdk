@@ -1,3 +1,6 @@
+/// HTTPS POST transport for Select beacon-ingestor detections.
+///
+/// Rejects cleartext endpoints; HTTP 200 acknowledges the whole posted batch.
 import Foundation
 
 enum HTTPIngestUploadError: Error, Equatable {
@@ -42,9 +45,7 @@ final class HTTPIngestUploadTransport: UploadTransport {
         detections: [QueuedDetection],
         authorization: UploadAuthorization
     ) async throws -> UploadResponse {
-        guard let scheme = ingestURL.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              ingestURL.host != nil else {
+        guard ingestURL.isUsableHTTPSEndpoint else {
             throw HTTPIngestUploadError.invalidEndpoint
         }
 

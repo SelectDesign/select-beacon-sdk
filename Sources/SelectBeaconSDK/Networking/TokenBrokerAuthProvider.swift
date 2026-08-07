@@ -22,6 +22,8 @@ enum TokenBrokerAuthError: Error, Equatable {
     case invalidEndpoint
     case networkRequestFailed
     case invalidHTTPResponse
+    /// Auth broker returned HTTP 429; honor `Retry-After` when present.
+    case rateLimited(retryAfter: TimeInterval?)
     case unexpectedStatusCode(Int)
     case invalidResponse
 }
@@ -116,9 +118,7 @@ final class TokenBrokerAuthProvider: AuthProvider {
     }
 
     private func requestToken() async throws -> UploadAuthorization {
-        guard let scheme = configuration.tokenEndpoint.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              configuration.tokenEndpoint.host != nil else {
+        guard configuration.tokenEndpoint.isUsableHTTPSEndpoint else {
             throw TokenBrokerAuthError.invalidEndpoint
         }
 
@@ -148,6 +148,13 @@ final class TokenBrokerAuthProvider: AuthProvider {
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw TokenBrokerAuthError.invalidHTTPResponse
+        }
+        if httpResponse.statusCode == 429 {
+            let delay = RetryAfterHeader.delay(
+                from: httpResponse.value(forHTTPHeaderField: "Retry-After"),
+                now: clock.now
+            )
+            throw TokenBrokerAuthError.rateLimited(retryAfter: delay)
         }
         guard (200...299).contains(httpResponse.statusCode) else {
             throw TokenBrokerAuthError.unexpectedStatusCode(httpResponse.statusCode)

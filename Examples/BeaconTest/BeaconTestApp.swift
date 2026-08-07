@@ -1,3 +1,6 @@
+/// Select/debug harness for physical-device validation of SelectBeaconSDK.
+///
+/// Uses `@_spi(SelectApp)` debug auto-ack — Select only; not for VIP copy-paste.
 import SwiftUI
 @_spi(SelectApp) import SelectBeaconSDK
 import SelectBeaconAppSupport
@@ -89,6 +92,32 @@ private final class BeaconTestModel: ObservableObject {
         wantsRunning = false
         isStopFinalizePending = support.isStopFinalizePending
         operationalStatus = SelectBeaconSDK.shared.operationalStatus
+    }
+
+    var canClearQueues: Bool { !wantsRunning && !isStopFinalizePending }
+
+    func clearPendingReports() {
+        guard canClearQueues else { return }
+        Task {
+            do {
+                try await support.clearPendingReports()
+                pendingReports = try await support.pendingReports()
+            } catch {
+                loadError = String(describing: error)
+            }
+        }
+    }
+
+    func clearDeadLetteredReports() {
+        guard canClearQueues else { return }
+        Task {
+            do {
+                try await support.clearDeadLetteredReports()
+                deadLetteredReports = try await support.deadLetteredReports()
+            } catch {
+                loadError = String(describing: error)
+            }
+        }
     }
 
     func secondsRemaining(in window: OpenBeaconWindow, at now: Date) -> Int {
@@ -203,6 +232,13 @@ private struct BeaconTestView: View {
                 Button("Stop") { model.stop() }
                     .disabled(!model.wantsRunning)
             }
+
+            HStack {
+                Button("Clear Queue") { model.clearPendingReports() }
+                    .disabled(!model.canClearQueues || model.pendingReports.isEmpty)
+                Button("Clear Dead Letter") { model.clearDeadLetteredReports() }
+                    .disabled(!model.canClearQueues || model.deadLetteredReports.isEmpty)
+            }
         }
     }
 
@@ -248,18 +284,21 @@ private struct BeaconTestView: View {
 
     private func locationCaption(_ location: LocationFix?, includeAccuracy: Bool) -> String {
         guard let location else { return "Location unavailable" }
+        let cachedTime = "Cached location time \(location.timestamp.formatted(date: .omitted, time: .standard))"
         if includeAccuracy {
             return String(
-                format: "Location %.5f, %.5f (±%.0fm)",
+                format: "Location %.5f, %.5f (±%.0fm) · %@",
                 location.latitude,
                 location.longitude,
-                location.horizontalAccuracy
+                location.horizontalAccuracy,
+                cachedTime
             )
         }
         return String(
-            format: "Location %.5f, %.5f",
+            format: "Location %.5f, %.5f · %@",
             location.latitude,
-            location.longitude
+            location.longitude,
+            cachedTime
         )
     }
 }

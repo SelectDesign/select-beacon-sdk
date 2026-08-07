@@ -72,14 +72,29 @@ public final class SelectBeaconSDK {
     /// Active stop-finalize generation. Distinct from ordinary window-close enqueues.
     private var activeStopFinalizeGeneration: Int?
 
+    /// Swappable host sink; coordinator always holds this forwarder reference.
+    private let diagnosticsForwarder: ForwardingDiagnosticsReporter
+
     private init() {
-        dependencies = .live
+        let forwarder = ForwardingDiagnosticsReporter()
+        diagnosticsForwarder = forwarder
+        dependencies = SDKDependencies.makeLive(diagnosticsReporter: forwarder)
         windowStore = ObservationWindowStore(configuration: SDKConfiguration.default)
         presenceExpiryScheduler = TaskDelayedActionScheduler()
         absenceExpiryScheduler = TaskDelayedActionScheduler()
     }
 
     // MARK: - Public lifecycle
+
+    /// Installs a host diagnostics sink for coarse SDK events.
+    ///
+    /// Pass `nil` to clear the sink (events are dropped). Safe before or after
+    /// `configure` / `start`; does not enable detection. Prefer
+    /// `operationalStatus` for in-app UX; use this only to forward events to
+    /// the host monitoring stack without logging secrets or full payloads.
+    public func setDiagnosticsReporter(_ reporter: (any SelectBeaconDiagnosticsReporting)?) {
+        diagnosticsForwarder.target = reporter
+    }
 
     /// Enables the SDK for this distributor or customer. Calling this does not begin detection.
     ///
@@ -232,12 +247,24 @@ public final class SelectBeaconSDK {
 
     private func prepareObserversIfNeeded() {
         if permissionObserver == nil {
-            let observer = dependencies.permissionObserverFactory()
-            observer.onAuthorizationChanged = { [weak self] authorization in
-                self?.apply(self?.session.authorizationChanged(authorization) ?? .none)
+            let observer: PermissionObserver?
+            if let factory = dependencies.permissionObserverFactory {
+                observer = factory()
+            } else if let engineObserver = detectionEngine() as? PermissionObserver {
+                // Live path: beacon engine's CLLocationManager also observes auth.
+                observer = engineObserver
+            } else {
+                // Misconfigured deps (nil factory + engine that is not a
+                // PermissionObserver). Skip auth wiring but still install lifecycle.
+                observer = nil
             }
-            permissionObserver = observer
-            apply(session.authorizationChanged(observer.authorization))
+            if let observer {
+                observer.onAuthorizationChanged = { [weak self] authorization in
+                    self?.apply(self?.session.authorizationChanged(authorization) ?? .none)
+                }
+                permissionObserver = observer
+                apply(session.authorizationChanged(observer.authorization))
+            }
         }
 
         if lifecycleObserver == nil {
@@ -494,9 +521,13 @@ public final class SelectBeaconSDK {
 
     @_spi(SelectApp)
     public func selectDeadLetteredReports() async throws -> [SelectPendingBeaconReport] {
-        guard let queue = resolvedQueue() else { return [] }
-        let records = try await queue.deadLetteredRecords()
-        return records.map(\.pendingReport)
+        let loaded = try await loadDeadLetteredReports()
+        // Prune-on-read must push AppSupport so callback-driven UIs drop evicted rows.
+        if loaded.evictedCount > 0 {
+            recordDeadLetterEviction(loaded.evictedCount)
+            onSelectDeadLetteredReportsChanged?(loaded.reports)
+        }
+        return loaded.reports
     }
 
     /// Empties the durable pending queue and publishes an empty AppSupport snapshot.
@@ -521,13 +552,33 @@ public final class SelectBeaconSDK {
         try await queue.clear()
 
         // Publish after clear so snapshot reads see recovered storage, then
-        // clear durable-queue degrade if the queue is healthy again.
+        // clear durable-queue degrade only when *both* stores are readable again.
         await publishPendingReportsSnapshot()
         await publishDeadLetteredReportsSnapshot()
+        await recoverDurableQueueUnreadableIfBothStoresReadable()
+    }
 
-        if case .degraded(.durableQueueUnreadable) = operationalStatus {
-            updateOperationalStatusForSession()
+    /// Empties the durable dead-letter store and publishes an empty AppSupport snapshot.
+    ///
+    /// Same gates as `selectClearPendingReports()`. Does not clear pending.
+    @_spi(SelectApp)
+    public func selectClearDeadLetteredReports() async throws {
+        guard enablementConfiguration != nil else {
+            throw SelectPendingReportsClearError.notConfigured
         }
+        guard !session.wantsRanging else {
+            throw SelectPendingReportsClearError.detectionActive
+        }
+        guard !selectIsStopFinalizePending else {
+            throw SelectPendingReportsClearError.stopFinalizePending
+        }
+
+        guard let queue = resolvedQueue() else {
+            throw SelectPendingReportsClearError.notConfigured
+        }
+        try await queue.clearDeadLetters()
+        await publishDeadLetteredReportsSnapshot()
+        await recoverDurableQueueUnreadableIfBothStoresReadable()
     }
 
     private func notifyActiveBeaconsChanged() {
@@ -607,11 +658,50 @@ public final class SelectBeaconSDK {
     /// dead-letter. Quietly degrades on unreadable store, same as pending.
     private func publishDeadLetteredReportsSnapshot() async {
         do {
-            let reports = try await selectDeadLetteredReports()
-            onSelectDeadLetteredReportsChanged?(reports)
+            let loaded = try await loadDeadLetteredReports()
+            recordDeadLetterEviction(loaded.evictedCount)
+            onSelectDeadLetteredReportsChanged?(loaded.reports)
         } catch {
             recordQueueFailure(error, forceUnreadable: true)
         }
+    }
+
+    /// Clears `.durableQueueUnreadable` only when pending *and* dead-letter stores
+    /// both read successfully. A one-sided clear must not mask the other file.
+    private func recoverDurableQueueUnreadableIfBothStoresReadable() async {
+        guard case .degraded(.durableQueueUnreadable) = operationalStatus else { return }
+        do {
+            // Use select* so dead-letter prune-on-read notifies AppSupport.
+            _ = try await selectPendingReports()
+            _ = try await selectDeadLetteredReports()
+            updateOperationalStatusForSession()
+        } catch {
+            // Keep degraded; do not re-record (publish already diagnosed the failure).
+        }
+    }
+
+    private struct DeadLetterLoad {
+        let reports: [SelectPendingBeaconReport]
+        let evictedCount: Int
+    }
+
+    private func loadDeadLetteredReports() async throws -> DeadLetterLoad {
+        guard let queue = resolvedQueue() else {
+            return DeadLetterLoad(reports: [], evictedCount: 0)
+        }
+        let snapshot = try await queue.deadLetteredRecords(now: dependencies.clock.now)
+        return DeadLetterLoad(
+            reports: snapshot.records.map(\.pendingReport),
+            evictedCount: snapshot.evictedCount
+        )
+    }
+
+    private func recordDeadLetterEviction(_ evictedCount: Int) {
+        guard evictedCount > 0 else { return }
+        dependencies.diagnosticsReporter.record(
+            .durableQueueEvicted,
+            error: DiagnosticNotice("dead-letter evicted \(evictedCount)")
+        )
     }
 
     /// Materializes the durable queue for the current enablement configuration.
@@ -686,7 +776,7 @@ public final class SelectBeaconSDK {
 
     init(
         engine: @escaping () -> DetectionEngine,
-        permissionObserver: @escaping () -> PermissionObserver,
+        permissionObserver: (() -> PermissionObserver)? = nil,
         lifecycleObserver: @escaping () -> ApplicationLifecycleObserving,
         clock: Clock,
         queue: @escaping (String) -> any DurableDetectionQueue,
@@ -704,6 +794,8 @@ public final class SelectBeaconSDK {
         identity: AppIdentity?,
         environment: Environment = .production
     ) {
+        let forwarder = ForwardingDiagnosticsReporter(target: diagnosticsReporter)
+        diagnosticsForwarder = forwarder
         dependencies = SDKDependencies(
             engineFactory: engine,
             permissionObserverFactory: permissionObserver,
@@ -718,7 +810,7 @@ public final class SelectBeaconSDK {
             retryBackoffSchedulerFactory: retryBackoffScheduler,
             deviceIdentifierFactory: deviceIdentifier,
             clock: clock,
-            diagnosticsReporter: diagnosticsReporter
+            diagnosticsReporter: forwarder
         )
         windowStore = ObservationWindowStore(configuration: SDKConfiguration.default)
         self.presenceExpiryScheduler = presenceExpiryScheduler

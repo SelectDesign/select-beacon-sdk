@@ -1,7 +1,19 @@
+/// Shared HTTPS endpoint validation for staging, auth, and ingest URLs.
+///
+/// Cleartext `http` is rejected package-wide.
+
 import Foundation
 import CryptoKit
 import CoreLocation
 
+extension URL {
+    /// Absolute `https` URL with a non-nil host (cleartext `http` rejected).
+    var isUsableHTTPSEndpoint: Bool {
+        scheme?.lowercased() == "https" && host != nil
+    }
+}
+
+/// Tunable detection, observation-window, upload, and location defaults.
 struct SDKConfiguration {
     let monitoredUUIDs: [UUID]
 
@@ -128,7 +140,7 @@ struct APIEndpoint: Equatable {
         url(path: "/sdk/v1/detections")
     }
 
-    /// True when `baseURL` is a usable http(s) absolute URL (not the production placeholder).
+    /// True when `baseURL` is a usable HTTPS absolute URL (not the production placeholder).
     var isUsableHTTPBase: Bool {
         authURL != nil && ingestURL != nil
     }
@@ -145,9 +157,7 @@ struct APIEndpoint: Equatable {
 
         let suffix = path.hasPrefix("/") ? path : "/\(path)"
         guard let url = URL(string: trimmedBase + suffix),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              url.host != nil else {
+              url.isUsableHTTPSEndpoint else {
             return nil
         }
         return url
@@ -192,6 +202,7 @@ extension SelectBeaconSDK {
         case production
 
         /// A caller-supplied staging endpoint, allowing multiple staging deployments.
+        /// Must be an absolute `https` URL with a host; cleartext `http` is rejected.
         case staging(baseURL: URL)
 
         fileprivate var endpoint: APIEndpoint? {
@@ -199,9 +210,7 @@ extension SelectBeaconSDK {
             case .production:
                 return APIEndpoint(baseURL: APIEndpointDefaults.production)
             case .staging(let baseURL):
-                guard let scheme = baseURL.scheme?.lowercased(),
-                      ["http", "https"].contains(scheme),
-                      baseURL.host != nil else {
+                guard baseURL.isUsableHTTPSEndpoint else {
                     return nil
                 }
                 return APIEndpoint(baseURL: baseURL.absoluteString)

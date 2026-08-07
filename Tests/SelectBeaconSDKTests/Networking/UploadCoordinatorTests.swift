@@ -782,4 +782,56 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertTrue(transport.uploads.isEmpty)
         XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
     }
+
+    func testAuthRateLimitedHonorsRetryAfterWithoutAdvancingBackoff() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 13)])
+        let auth = FakeAuthProvider()
+        auth.error = TokenBrokerAuthError.rateLimited(retryAfter: 75)
+        let transport = FakeTransport()
+        let retry = ManualDelayedActionScheduler()
+        let (coordinator, _, _, _, _, _, _, clock, _) = makeCoordinator(
+            queue: queue,
+            auth: auth,
+            transport: transport,
+            retry: retry
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+
+        XCTAssertEqual(auth.invalidateCount, 0)
+        XCTAssertTrue(transport.uploads.isEmpty)
+        XCTAssertEqual(retry.scheduledDelays.last, 75)
+
+        // After Retry-After elapses, a generic auth failure still uses the initial 15s backoff.
+        let schedulesBeforeResume = retry.scheduledDelays.count
+        clock.now = clock.now.addingTimeInterval(75)
+        auth.error = TokenBrokerAuthError.networkRequestFailed
+        retry.fire()
+        await waitForSchedules(schedulesBeforeResume + 1, scheduler: retry)
+
+        XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
+    }
+
+    func testAuthRateLimitedWithoutRetryAfterUsesExponentialBackoff() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 14)])
+        let auth = FakeAuthProvider()
+        auth.error = TokenBrokerAuthError.rateLimited(retryAfter: nil)
+        let transport = FakeTransport()
+        let retry = ManualDelayedActionScheduler()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            auth: auth,
+            transport: transport,
+            retry: retry
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+
+        XCTAssertTrue(transport.uploads.isEmpty)
+        XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
+    }
 }

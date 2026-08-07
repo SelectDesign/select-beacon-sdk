@@ -29,7 +29,7 @@ public enum SDKOperationalIssue: Equatable, Sendable {
     case durableQueueUnreadable
 }
 
-/// Why `selectClearPendingReports()` refused or could not run.
+/// Why `selectClearPendingReports()` / `selectClearDeadLetteredReports()` refused or could not run.
 @_spi(SelectApp)
 public enum SelectPendingReportsClearError: Error, Equatable, Sendable {
     case notConfigured

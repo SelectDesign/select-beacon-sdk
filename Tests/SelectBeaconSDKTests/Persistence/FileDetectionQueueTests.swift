@@ -384,11 +384,98 @@ final class FileDetectionQueueTests: XCTestCase {
         )
         let detection = QueuedDetectionFixtures.make(minor: 9)
         _ = try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1))
-        try await queue.deadLetter(ids: [detection.id])
+        try await queue.deadLetter(ids: [detection.id], now: Date(timeIntervalSince1970: 1))
         let pending = try await queue.nextBatch(limit: 10)
         XCTAssertTrue(pending.isEmpty)
-        let dead = try await queue.deadLetteredRecords()
-        XCTAssertEqual(dead.map(\.minor), [9])
+        let dead = try await queue.deadLetteredRecords(now: Date(timeIntervalSince1970: 1))
+        XCTAssertEqual(dead.records.map(\.minor), [9])
+        XCTAssertEqual(dead.evictedCount, 0)
+    }
+
+    func testDeadLetterEvictsOldestWhenOverMaxQueueSize() async throws {
+        let fileStore = MemoryFileStore()
+        let queue = FileDetectionQueue(
+            storageIdentifier: "dl-size",
+            fileStore: fileStore,
+            fileURL: URL(fileURLWithPath: "/queue/pending-size.json"),
+            deadLetterURL: URL(fileURLWithPath: "/queue/dead-size.json"),
+            maxQueueSize: 2,
+            maxRecordAge: 604_800
+        )
+        let now = Date(timeIntervalSince1970: 1_000)
+        for minor in 1...3 {
+            let detection = QueuedDetectionFixtures.make(minor: minor, queuedAt: now)
+            _ = try await queue.enqueue(detection, now: now)
+            let result = try await queue.deadLetter(ids: [detection.id], now: now)
+            if minor < 3 {
+                XCTAssertEqual(result.evictedCount, 0)
+            } else {
+                XCTAssertEqual(result.evictedCount, 1)
+            }
+        }
+        let dead = try await queue.deadLetteredRecords(now: now)
+        XCTAssertEqual(dead.records.map(\.minor), [2, 3])
+        XCTAssertEqual(dead.evictedCount, 0)
+    }
+
+    func testDeadLetterEvictsByAgeOnAppendAndLoad() async throws {
+        let fileStore = MemoryFileStore()
+        let deadLetterURL = URL(fileURLWithPath: "/queue/dead-age.json")
+        let queue = FileDetectionQueue(
+            storageIdentifier: "dl-age",
+            fileStore: fileStore,
+            fileURL: URL(fileURLWithPath: "/queue/pending-age.json"),
+            deadLetterURL: deadLetterURL,
+            maxQueueSize: 50,
+            maxRecordAge: 100
+        )
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        let old = QueuedDetectionFixtures.make(minor: 1, queuedAt: t0)
+        let fresh = QueuedDetectionFixtures.make(minor: 2, queuedAt: t0.addingTimeInterval(50))
+        _ = try await queue.enqueue(old, now: t0)
+        _ = try await queue.deadLetter(ids: [old.id], now: t0)
+        _ = try await queue.enqueue(fresh, now: t0.addingTimeInterval(50))
+        let appendResult = try await queue.deadLetter(
+            ids: [fresh.id],
+            now: t0.addingTimeInterval(150)
+        )
+        XCTAssertEqual(appendResult.evictedCount, 1)
+        let afterAppend = try await queue.deadLetteredRecords(now: t0.addingTimeInterval(150))
+        XCTAssertEqual(afterAppend.records.map(\.minor), [2])
+
+        // Seed an aged record as if left by a prior launch, then load/prune.
+        let stale = QueuedDetectionFixtures.make(minor: 9, queuedAt: t0)
+        let encoded = try JSONEncoder().encode(afterAppend.records + [stale])
+        fileStore.seed(encoded, at: deadLetterURL)
+        let reloaded = FileDetectionQueue(
+            storageIdentifier: "dl-age-reload",
+            fileStore: fileStore,
+            fileURL: URL(fileURLWithPath: "/queue/pending-age2.json"),
+            deadLetterURL: deadLetterURL,
+            maxQueueSize: 50,
+            maxRecordAge: 100
+        )
+        let loaded = try await reloaded.deadLetteredRecords(now: t0.addingTimeInterval(150))
+        XCTAssertEqual(loaded.records.map(\.minor), [2])
+        XCTAssertEqual(loaded.evictedCount, 1)
+    }
+
+    func testClearDeadLettersEmptiesStore() async throws {
+        let fileStore = MemoryFileStore()
+        let queue = FileDetectionQueue(
+            storageIdentifier: "dl-clear",
+            fileStore: fileStore,
+            fileURL: URL(fileURLWithPath: "/queue/pending-clear-dl.json"),
+            deadLetterURL: URL(fileURLWithPath: "/queue/dead-clear.json")
+        )
+        let detection = QueuedDetectionFixtures.make(minor: 4)
+        let now = Date(timeIntervalSince1970: 1)
+        _ = try await queue.enqueue(detection, now: now)
+        _ = try await queue.deadLetter(ids: [detection.id], now: now)
+        try await queue.clearDeadLetters()
+        let dead = try await queue.deadLetteredRecords(now: now)
+        XCTAssertTrue(dead.records.isEmpty)
+        XCTAssertEqual(dead.evictedCount, 0)
     }
 
     func testEnqueueAppliesCompleteUntilFirstUserAuthenticationToFilesAndDirectory() async throws {
@@ -432,7 +519,7 @@ final class FileDetectionQueueTests: XCTestCase {
         )
         let detection = QueuedDetectionFixtures.make(minor: 3)
         _ = try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1))
-        try await queue.deadLetter(ids: [detection.id])
+        try await queue.deadLetter(ids: [detection.id], now: Date(timeIntervalSince1970: 1))
 
         XCTAssertEqual(
             fileStore.protectionByURL[deadLetterURL],

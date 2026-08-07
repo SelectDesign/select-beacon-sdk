@@ -24,20 +24,32 @@
   enforcement. Active beacons are ordered by UUID → major → minor. Dead letters
   use the same report model as pending but stay in a separate list and are not
   re-uploaded; `clearPendingReports()` does not clear them.
+  Dead-letter retention mirrors pending (`maxQueueSize` / `maxRecordAge`);
+  Select can call `clearDeadLetteredReports()` with the same stop gates as
+  pending clear.
 - The host supplies an app key and app secret before detection can start.
   Configuration stores them in memory only; configure never starts ranging,
   reads disk, or uses the network.
 - Production is the default (`REPLACE_ME_PRODUCTION` until its host is
-  confirmed). Staging requires a caller-supplied URL. Environment cannot change
-  after `start()`.
+  confirmed). Staging requires a caller-supplied **HTTPS** URL (cleartext
+  `http` is rejected). Environment cannot change after `start()`.
 
 ## Permission, lifecycle, and concurrency
 
 - Observe host-owned location authorization; never request permission.
+  Auth observation shares the detection engine's `CLLocationManager`; a second
+  manager is used only for the coarse location cache (two-manager design).
+  The SDK ships `PrivacyInfo.xcprivacy` declaring Device ID (IDFV) and Precise
+  Location for App Functionality with tracking disabled; Required Reason APIs
+  are not used. Host Info.plist usage strings remain host-owned.
+- Hosts may install `SelectBeaconDiagnosticsReporting` via
+  `setDiagnosticsReporter` to forward coarse events to their own monitoring.
+  The SDK stays dependency-free and never logs secrets or full payloads.
 - Always authorization keeps the engine started when backgrounded: region
   monitoring can wake the app (host location background mode required); ranging
-  runs on enter/inside bursts, not continuous background ranging. When-In-Use
-  detects only while the app is active.
+  runs on enter/inside bursts, not continuous background ranging. Screen off /
+  lock uses that same wake/burst model — continuous suspended ranging is a
+  non-goal. When-In-Use detects only while the app is active.
 - `SelectBeaconSDK` and Apple-system adapters are main-actor isolated.
 - The package includes BeaconTest harness source for physical-device testing.
 
@@ -65,6 +77,8 @@
   the full durable finalize batch settles.
 - `clearPendingReports()` is available only while detection is stopped and
   stop-finalize has settled. Clearing intentionally overwrites corrupt payloads.
+  `clearDeadLetteredReports()` uses the same gates and empties dead letters
+  only; the two clears stay independent.
 - Never overwrite unreadable pending detections during normal load/enqueue.
   Surface a typed queue-load error until storage is cleared.
 - Pending and dead-letter files (and their Application Support directory) use
@@ -85,17 +99,21 @@
   `token_type` + expiry in memory, and ingest attaches `Authorization`.
   There is no auth-pause kill-switch. Unusable production placeholder keeps
   deferred upload seams (no network).
-- Forward triggers: foreground sighting quiet (60s), maximum queue age (300s),
-  app background/foreground, connectivity return, cold-start backlog flush, or
-  post-enqueue opportunistic flush when online. **Background wake / background
-  sighting flushes are bounded to one batch** so the wake window stays short;
-  remaining records stay durable until a later full-drain trigger.
+- Forward triggers (**latency-first**): when online, post-enqueue / region-wake
+  opportunistic flush is the usual first drain (foreground may fully drain;
+  **background wake flushes are bounded to one batch**). Quiet debounce (60s)
+  is a foreground coalescing backstop, not the primary drain path. Also:
+  maximum queue age (300s), app background/foreground, connectivity return,
+  and cold-start backlog flush. Remaining records stay durable until a later
+  full-drain trigger.
 - Offline means retain without an attempt or backoff. Retryable failures back off
   15s, doubling to 300s, and reset after successful acknowledgement.
   `Retry-After` (including header-less 429 → exponential) is honored for rate
-  limits. 401/403 invalidates the token, refreshes once, and retries immediately.
+  limits on both ingest and the auth token broker. 401/403 invalidates the
+  token, refreshes once, and retries immediately.
   Other 4xx dead-letter the batch; retryable failures dead-letter after
-  `maxUploadAttempts`. Pending queue size/age caps apply with eviction diagnostics.
+  `maxUploadAttempts`. Pending and dead-letter size/age caps apply with
+  eviction diagnostics.
 - Auth is `POST {base}/auth/v1` with `app_key` and `app_secret`; responses use
   `access_token`, `token_type`, and `expires_in`.
 - Ingest is `POST {base}/sdk/v1/detections` with body
@@ -107,4 +125,4 @@
   never holds or transmits an Auth0 client secret. The app secret is never
   logged or written to the durable queue.
 - The production host remains `REPLACE_ME_PRODUCTION` until replaced; explicit
-  usable staging URLs use the live auth and HTTP implementations.
+  usable HTTPS staging URLs use the live auth and HTTP implementations.

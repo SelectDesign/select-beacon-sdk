@@ -1,16 +1,11 @@
 import Foundation
 
-enum DiagnosticEvent: Equatable {
-    case durableQueueWriteFailed
-    case durableQueueUnreadable
-    case uploadFailed
-    case deviceIdentifierUnavailable
-    case uploadDeadLettered
-    case durableQueueEvicted
-}
+/// Internal aliases for the public diagnostics types.
+typealias DiagnosticEvent = SelectBeaconDiagnosticEvent
+typealias DiagnosticsReporting = SelectBeaconDiagnosticsReporting
 
 /// Marker used when a diagnostic has no underlying failure (e.g. intentional eviction).
-struct DiagnosticNotice: Error, Equatable {
+struct DiagnosticNotice: Error, Equatable, Sendable {
     let detail: String
 
     init(_ detail: String = "") {
@@ -18,18 +13,23 @@ struct DiagnosticNotice: Error, Equatable {
     }
 }
 
-/// Internal diagnostics seam for tests and future host injection (e.g. Sentry).
-/// Not part of the standard public SDK surface.
-protocol DiagnosticsReporting {
-    func record(_ event: DiagnosticEvent, error: Error)
+/// Drops all diagnostic events (default when no host reporter is installed).
+final class NoopDiagnosticsReporter: SelectBeaconDiagnosticsReporting {
+    init() {}
+
+    func record(_ event: SelectBeaconDiagnosticEvent, error: Error) {}
 }
 
-extension DiagnosticsReporting {
-    func record(_ event: DiagnosticEvent) {
-        record(event, error: DiagnosticNotice())
+/// Forwards to a swappable host sink so UploadCoordinator can keep one reporter reference.
+@MainActor
+final class ForwardingDiagnosticsReporter: SelectBeaconDiagnosticsReporting {
+    var target: (any SelectBeaconDiagnosticsReporting)?
+
+    init(target: (any SelectBeaconDiagnosticsReporting)? = nil) {
+        self.target = target
     }
-}
 
-struct NoopDiagnosticsReporter: DiagnosticsReporting {
-    func record(_ event: DiagnosticEvent, error: Error) {}
+    func record(_ event: SelectBeaconDiagnosticEvent, error: Error) {
+        target?.record(event, error: error)
+    }
 }

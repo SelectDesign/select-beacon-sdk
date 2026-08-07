@@ -78,8 +78,10 @@ There is no separate “retrying” status in AppSupport today — still show as
 
 ### Dead letter (`PendingBeaconReport`)
 
-Same row fields as Queued. These will **not** retry. `clearPendingReports()`
-clears pending only and does not empty Dead letter.
+Same row fields as Queued. These will **not** retry. Bounded by the same max
+size/age as pending (oldest dropped). `clearPendingReports()` clears pending
+only; use `clearDeadLetteredReports()` (or **Clear Dead Letter**) to empty this
+list. Both clears require detection stopped and `isStopFinalizePending == false`.
 
 ## Explicit non-goals
 
@@ -107,3 +109,5 @@ clears pending only and does not empty Dead letter.
 - **Clear Queue** (or `clearPendingReports()`) is available only when detection
   is stopped and `isStopFinalizePending == false`. It empties durable pending
   reports, including recovering an unreadable queue file; Dead letter is unchanged.
+- **Clear Dead Letter** (or `clearDeadLetteredReports()`) uses the same gates and
+  empties dead letters only; pending is unchanged.

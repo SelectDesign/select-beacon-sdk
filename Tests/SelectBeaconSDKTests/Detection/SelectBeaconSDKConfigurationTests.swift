@@ -35,11 +35,18 @@ final class SelectBeaconSDKConfigurationTests: XCTestCase {
         XCTAssertNotEqual(first.sdk.configuredEndpoint, second.sdk.configuredEndpoint)
     }
 
-    func testHTTPStagingEndpointIsSupported() {
+    func testHTTPStagingEndpointDoesNotConfigureSDK() {
         let stagingURL = SDKTestFixture.testURL("http://staging.example.com")
         let fixture = SDKTestFixture.makeSDK(environment: .staging(baseURL: stagingURL))
 
-        XCTAssertEqual(fixture.sdk.configuredEndpoint?.baseURL, stagingURL.absoluteString)
+        fixture.sdk.start()
+
+        XCTAssertNil(fixture.sdk.configuredEnvironment)
+        XCTAssertTrue(fixture.engine.startedUUIDs.isEmpty)
+        XCTAssertEqual(
+            fixture.sdk.operationalStatus,
+            .degraded(.startRequestedBeforeConfiguration)
+        )
     }
 
     func testNonHTTPStagingEndpointDoesNotConfigureSDK() {

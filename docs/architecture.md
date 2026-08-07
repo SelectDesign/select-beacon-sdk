@@ -21,6 +21,7 @@ The public surface is intentionally small:
 ```swift
 SelectBeaconSDK.configure(
     appKey: "...",
+    appSecret: "...",
     environment: .production // default
 )
 
@@ -32,9 +33,10 @@ SelectBeaconSDK.shared.start()
 SelectBeaconSDK.shared.stop()
 ```
 
-- `configure` stores a valid app key and environment only. It does not monitor,
-  range, request permission, create the durable queue, or perform network I/O.
-- `start` is quiet until a valid app key has been configured.
+- `configure` stores a valid `AppIdentity` (app key + app secret) and
+  environment in memory only. It does not monitor, range, request permission,
+  create the durable queue, or perform network I/O.
+- `start` is quiet until a valid app key and app secret have been configured.
 - `stop` stops region monitoring and ranging, finalizes open observation
   windows into the durable queue, and clears active presence. The next `start`
   begins a fresh window session.
@@ -76,21 +78,29 @@ flowchart LR
 
 `Configuration/Configuration.swift` contains internal configuration types:
 
-- `AppIdentity` validates a non-empty app key.
+- `AppIdentity` validates a non-empty app key and app secret.
 - `SelectBeaconSDK.Environment` selects production or staging.
 - Production uses the internal `REPLACE_ME_PRODUCTION` placeholder until a real
   endpoint is supplied.
-- Staging requires a caller-supplied HTTP or HTTPS URL, allowing multiple
-  staging deployments.
-- `SDKEnablementConfiguration` combines the app key and endpoint information.
+- Staging requires a caller-supplied **HTTPS** URL (cleartext `http` is
+  rejected), allowing multiple staging deployments.
+- `SDKEnablementConfiguration` combines the app identity and endpoint information.
 
 Configuration is locked after the first `start()` call. This prevents one
 process from mixing environments in the same detection session.
 
 ### 2. Permission and lifecycle coordination
 
-`PermissionObserver.swift` maps Core Location authorization into the SDK's
-`LocationAuthorization` enum:
+Two `CLLocationManager` instances are intentional:
+
+1. **Detection engine** — region monitoring, ranging, and host authorization
+   observation (same manager/delegate; auth is process-wide).
+2. **Location provider** — coarse / significant-change cache for window stamps.
+
+A third permission-only manager is not used. The SDK never requests permission.
+
+`PermissionObserver` (implemented by `CoreLocationDetectionEngine`) maps Core
+Location authorization into the SDK's `LocationAuthorization` enum:
 
 - `always`: the engine stays started when backgrounded. Region monitoring can
   wake the process (host location background mode required); ranging runs in
@@ -104,6 +114,13 @@ The SDK **never** calls `requestWhenInUseAuthorization()` or
 `ApplicationLifecycleObserver.swift` observes app active/inactive transitions.
 It enforces foreground-only detection under When In Use, and under Always it
 tells the engine to drop continuous ranging while keeping region monitoring.
+
+Screen off / device locked uses the same Always policy as backgrounding: the
+engine stays started, continuous ranging is off, and region enter/inside
+callbacks start short ranging bursts. Regions set
+`notifyEntryStateOnDisplay = true` so iOS can refresh inside/outside when the
+display turns on. This is not continuous suspended ranging. Host location
+background mode is required for reliable wakes of a suspended process.
 
 `RangingSessionState.swift` is pure state-machine logic. It combines:
 
@@ -126,7 +143,8 @@ decisions here so they can be unit tested without an app or location hardware.
 - Uses **ranging** (`CLBeaconIdentityConstraint` + `startRangingBeacons`) to
   read major/minor/RSSI. Foreground keeps continuous ranging for responsiveness;
   background drops continuous ranging and starts short ranging bursts on
-  enter / determined-state inside, stopping on exit / outside.
+  enter / determined-state inside, stopping on exit / outside. Screen-off and
+  locked devices follow that same wake/burst path (not continuous ranging).
 - Soft-caps monitored UUIDs (`maxMonitoredBeaconUUIDs`) so the SDK does not
   exhaust the app-wide 20-region budget shared with the host.
 
@@ -169,8 +187,11 @@ application:
   durable queue. They include records written during a prior app launch.
 - `deadLetteredReports()` and `onDeadLetteredReportsChanged` read the durable
   dead-letter store (non-retryable failure or max upload attempts). Same
-  snapshot model as pending; separate list; not re-uploaded.
-  `clearPendingReports()` clears pending only.
+  snapshot model as pending; separate list; not re-uploaded. Bounded by the
+  same `maxQueueSize` / `maxRecordAge` as pending (oldest dropped; eviction
+  emits `durableQueueEvicted`). `clearPendingReports()` clears pending only;
+  `clearDeadLetteredReports()` clears dead letters only (same stop /
+  stop-finalize gates).
 - `isStopFinalizePending` and `onStopFinalizePendingChanged` track whether a
   `stop()`-initiated finalize enqueue is still in flight. Hosts must gate Start
   on this flag becoming `false`; empty open windows alone are not sufficient.
@@ -223,7 +244,8 @@ part of the standard public API; Select pending reports may include it.
 
 - `QueuedDetection`: Codable persisted representation of a reportable beacon.
 - `DurableDetectionQueue`: enqueue, batch retrieval, acknowledgement, clear,
-  and dead-letter contract. Its operations are asynchronous so callers do not
+  dead-letter (with age/count retention), clear-dead-letters, and snapshot
+  contract. Its operations are asynchronous so callers do not
   run file I/O on the main actor.
 - `FileDetectionQueue`: actor-isolated, JSON file-backed implementation with
   atomic writes.
@@ -250,8 +272,10 @@ Unreadable queue data is never replaced by a newly observed detection. Ordinary
 enqueue / load paths return `DurableDetectionQueueError.unreadableStoredDetections`
 so the original bytes remain for diagnosis. Hosts can intentionally recover with
 AppSupport `clearPendingReports()` (SPI: `selectClearPendingReports()`), which
-overwrites the durable file with an empty queue after detection is stopped and
-stop-finalize has settled.
+overwrites the durable pending file with an empty queue after detection is stopped and
+stop-finalize has settled. `clearDeadLetteredReports()` (SPI:
+`selectClearDeadLetteredReports()`) clears the dead-letter file only under the
+same gates.
 
 Queue files are isolated using a SHA-256 identifier derived from the app key
 and resolved endpoint. The app key is not written to the file name. This keeps
@@ -294,14 +318,14 @@ hold an open network session for detection to work.
 **Forward trigger set** (earliest wins; all require `start()` and a satisfied
 network path; retry/`Retry-After` pause suppresses early opportunistic sends):
 
-| Trigger                                  | Role in the pattern                                    |
-| ---------------------------------------- | ------------------------------------------------------ |
-| Foreground quiet debounce (60s)          | Primary coalescing window after activity settles       |
-| Max queue age (300s)                     | Backstop so a busy venue cannot stall forever          |
-| App background / foreground              | Opportunistic flush on lifecycle edges                 |
-| Connectivity return                      | Resume forward after offline retention                 |
-| Cold `start()` with disk backlog         | Recover prior-session stored reports                   |
-| Post-enqueue / region wake (when online) | Foreground: full drain; background: **one batch** only |
+| Trigger                                  | Role in the pattern                                                        |
+| ---------------------------------------- | -------------------------------------------------------------------------- |
+| Post-enqueue / region wake (when online) | **Latency-first** forward: foreground full drain; background **one batch** |
+| Foreground quiet debounce (60s)          | Coalescing backstop after activity settles (not the usual first drain)     |
+| Max queue age (300s)                     | Backstop so a busy venue cannot stall forever                              |
+| App background / foreground              | Opportunistic flush on lifecycle edges                                     |
+| Connectivity return                      | Resume forward after offline retention                                     |
+| Cold `start()` with disk backlog         | Recover prior-session stored reports                                       |
 
 Implementation of the forward half lives in `UploadCoordinator` (next section).
 
@@ -311,22 +335,24 @@ Implementation of the forward half lives in `UploadCoordinator` (next section).
 transmits already-persisted reports. Triggers (see §5b; earliest wins, all
 connectivity-gated):
 
-1. **Quiet debounce (foreground only):** no valid beacon sighting for
+1. **Post-enqueue / ranging wake (latency-first):** after durable enqueue
+   (including background region wakes), attempt a connectivity-gated flush when
+   online. In the **foreground**, this may fully drain the queue. In the
+   **background**, flush is **bounded to one batch** so the wake window stays
+   short; remaining records stay on disk until a later full-drain trigger.
+2. **Quiet debounce (foreground only):** no valid beacon sighting for
    `sendDebounce` (60s). Any sighting resets the timer. This is not reset by
-   enqueue alone.
-2. **Max queue age:** oldest record’s `queuedAt` older than `maxQueueAge`
+   enqueue alone. It is a coalescing backstop when opportunistic flush did not
+   already clear the queue (e.g. offline at enqueue time).
+3. **Max queue age:** oldest record’s `queuedAt` older than `maxQueueAge`
    (300s) forces a send even if activity never goes quiet.
-3. **App backgrounding** and **app foregrounding:** opportunistic immediate flush.
-4. **Connectivity return:** immediate flush when the path becomes satisfied.
-5. **Cold start:** `start()` materializes the durable queue from disk and, when
+4. **App backgrounding** and **app foregrounding:** opportunistic immediate flush.
+5. **Connectivity return:** immediate flush when the path becomes satisfied.
+6. **Cold start:** `start()` materializes the durable queue from disk and, when
    a backlog exists and the path is satisfied, flushes immediately.
-6. **Post-enqueue / ranging wake:** after durable enqueue (including background
-   region wakes), attempt a connectivity-gated flush when online. In the
-   **foreground**, this may drain the queue. In the **background**, flush is
-   **bounded to one batch** so the wake window stays short; remaining records
-   stay on disk until a later full-drain trigger. Quiet debounce remains
-   foreground-only. True system background `URLSession` transfer (Tier B) is
-   not implemented yet.
+
+Quiet debounce remains foreground-only. True system background `URLSession`
+transfer (Tier B) is not implemented yet.
 
 Offline triggers do not attempt a send and do not start retry backoff.
 Failed sends classify as follows:
@@ -335,15 +361,18 @@ Failed sends classify as follows:
   doubling to `uploadRetryBackoffMax` 300s). Each failure increments a persisted
   per-record `uploadAttemptCount`. After `maxUploadAttempts` (8), the batch is
   moved to a durable dead-letter store so the FIFO head can advance.
-- **429:** retryable; honor `Retry-After` when present, otherwise exponential
-  backoff. Attempts count toward `maxUploadAttempts`.
+- **429 (ingest or auth token broker):** retryable; honor `Retry-After` when
+  present, otherwise exponential backoff. Attempts count toward
+  `maxUploadAttempts`.
 - **401/403:** invalidate the cached token, refresh once, and retry the same
   batch immediately. A second failure uses exponential backoff (no tight loop).
 - **Other 4xx (e.g. 400, 422):** non-retryable; dead-letter the batch immediately.
 
 Dead-lettered records are retained on disk for diagnostics (not uploaded again)
-and emit `uploadDeadLettered`. The pending queue is bounded by `maxQueueSize`
-(500) and `maxRecordAge` (7 days); eviction emits `durableQueueEvicted`.
+and emit `uploadDeadLettered`. The pending and dead-letter stores are both
+bounded by `maxQueueSize` (500) and `maxRecordAge` (7 days); eviction emits
+`durableQueueEvicted`. Select can also call `clearDeadLetteredReports()` while
+detection is stopped.
 
 On successful acknowledgement: backoff **resets** to 15 seconds. Records stay
 durable until acknowledged or dead-lettered. The Select pending-report UI still
@@ -395,25 +424,47 @@ request. The SDK never holds or transmits an Auth0 client secret, and the
 durable detection queue never stores access tokens or the app secret.
 
 `HTTPIngestUploadTransport` performs the live ingest POST when the environment
-base URL is a usable http(s) URL. Production remains deferred while
+base URL is a usable HTTPS URL. Production remains deferred while
 `REPLACE_ME_PRODUCTION` is still the placeholder. Tests use fakes against the
 coordinator and HTTP seams.
 
-## Diagnostics and Sentry
+## Privacy manifest
 
-`DiagnosticsReporter.swift` provides the internal `DiagnosticsReporting` seam.
-The SDK currently reports durable queue persistence failures—including queue
-load and write failures—through it, plus upload failures and unavailable
-`deviceId` (IDFV) when a flush cannot build the confirmed payload.
-`durableQueueUnreadable` identifies corrupted persisted data separately from
-`durableQueueWriteFailed`.
+`SelectBeaconSDK` ships a bundled `PrivacyInfo.xcprivacy` (SPM resource) that
+declares:
 
-The core package must not import Sentry, because it has zero third-party
-dependencies. The host app, or an optional adapter package, should bridge
-sanitized SDK diagnostic events to Sentry.
+- **No tracking** (`NSPrivacyTracking` false; empty tracking domains).
+- **Collected data:** Device ID (IDFV as wire `device_id`) and Precise Location
+  (optional lat/lng on ingest), both for App Functionality and linked to the
+  install, not used for tracking.
+- **Required Reason APIs:** none — production code does not call Apple’s listed
+  UserDefaults / boot-time / disk-space / file-timestamp / keyboard APIs.
 
-Do not emit secrets, tokens, request headers, full payloads, or raw beacon
-history in diagnostics. Rate-limit repeated failures such as offline retries.
+`SelectBeaconAppSupport` does not ship a separate manifest. Host apps still
+supply Info.plist location usage strings and own permission prompts.
+
+## Diagnostics
+
+`SelectBeaconDiagnostics.swift` defines the public event vocabulary and
+`SelectBeaconDiagnosticsReporting` host sink. Install with
+`SelectBeaconSDK.shared.setDiagnosticsReporter(_:)` (pass `nil` to clear).
+Production defaults to a no-op; the shared facade keeps a forwarding box so
+swapping the host sink does not require restarting upload.
+
+Events are coarse and non-sensitive:
+
+- `durableQueueWriteFailed` / `durableQueueUnreadable`
+- `uploadFailed` / `uploadDeadLettered`
+- `deviceIdentifierUnavailable`
+- `durableQueueEvicted`
+
+`operationalStatus` remains the primary in-app signal for recoverable issues.
+Diagnostics are optional supplemental telemetry for the host’s monitoring
+backend. Do not emit secrets, tokens, request headers, full payloads, or raw
+beacon history. Rate-limit repeated failures such as offline retries.
+
+The core package must not import a third-party monitoring SDK (zero third-party
+dependencies). Hosts bridge events themselves.
 
 ## Tests
 
@@ -462,42 +513,44 @@ physical iPhone/iPad validation checklist.
 
 ## File map
 
-| File                                                     | Responsibility                                               |
-| -------------------------------------------------------- | ------------------------------------------------------------ |
-| `Public/SelectBeaconSDK.swift`                           | Core lifecycle, status, SPI bridge, and queue wiring         |
-| `Public/SDKOperationalStatus.swift`                      | Standard-consumer operational status models                  |
-| `Public/BeaconReporting.swift`                           | Select-app SPI snapshot models                               |
-| `../SelectBeaconAppSupport/SelectBeaconAppSupport.swift` | Select app state-view adapter                                |
-| `Configuration/Configuration.swift`                      | Internal app key, endpoint, environment, and queue namespace |
-| `Detection/PermissionObserver.swift`                     | Observe-only Core Location authorization adapter             |
-| `Detection/ApplicationLifecycleObserver.swift`           | App activity observer for When In Use policy                 |
-| `Detection/RangingSessionState.swift`                    | Pure ranging policy state machine                            |
-| `Detection/DetectionEngine.swift`                        | Internal monitoring/ranging engine seam                      |
-| `Detection/DetectedBeacon.swift`                         | Internal platform-neutral ranging DTO                        |
-| `Detection/CoreLocationDetectionEngine.swift`            | Main-actor Core Location region monitor + ranging adapter    |
-| `Detection/ObservationWindowStore.swift`                 | Pure 60s observation-window aggregation                      |
-| `Detection/ActiveBeaconStore.swift`                      | In-memory active beacon snapshot                             |
-| `Detection/LocationFix.swift`                            | SDK-owned cached location snapshot                           |
-| `Detection/LocationProviding.swift`                      | Location cache protocol                                      |
-| `Detection/CoreLocationProvider.swift`                   | Hybrid coarse / significant-change location                  |
-| `Persistence/DurableDetectionQueue.swift`                | Actor-isolated persisted detection queue                     |
-| `Networking/UploadInterfaces.swift`                      | Auth/transport upload contracts                              |
-| `Networking/BeaconUploadPayload.swift`                   | `{ detections: [flat objects…] }` encoder + snake_case keys  |
-| `Networking/DeviceIdentifying.swift`                     | IDFV (`device_id`) seam for upload stamping                  |
-| `Networking/HTTPIngestUploadTransport.swift`             | Live ingest POST with Bearer auth                            |
-| `Networking/HTTPIngestStatusClassifier.swift`            | HTTP status → retry / dead-letter / refresh classification   |
-| `Networking/UploadFailurePolicy.swift`                   | Maps transport/auth errors to flush outcomes                 |
-| `Networking/RetryAfterHeader.swift`                      | Parse `Retry-After` for 429 backoff                          |
-| `Networking/NetworkPathObserver.swift`                   | Restart-safe connectivity observer                           |
-| `Networking/UploadCoordinator.swift`                     | Quiet debounce, max-age, full drain, bounded wake flush      |
-| `Networking/TokenBrokerAuthProvider.swift`               | In-memory Select token-broker authorization                  |
-| `Support/Clock.swift`                                    | Injectable time source                                       |
-| `Support/DelayedActionScheduler.swift`                   | Shared replaceable one-shot timer seam                       |
-| `Support/DiagnosticsReporter.swift`                      | Internal diagnostics bridge                                  |
-| `Support/SDKDependencies.swift`                          | Internal live/test dependency composition                    |
-| `development-context.md`                                 | Authoritative product constraints                            |
-| `decisions.md`                                           | Short record of key decisions                                |
-| `README.md`                                              | Host integration instructions                                |
+| File                                                     | Responsibility                                                 |
+| -------------------------------------------------------- | -------------------------------------------------------------- |
+| `Public/SelectBeaconSDK.swift`                           | Core lifecycle, status, SPI bridge, and queue wiring           |
+| `Public/SDKOperationalStatus.swift`                      | Standard-consumer operational status models                    |
+| `Public/BeaconReporting.swift`                           | Select-app SPI snapshot models                                 |
+| `../SelectBeaconAppSupport/SelectBeaconAppSupport.swift` | Select app state-view adapter                                  |
+| `Configuration/Configuration.swift`                      | Internal app key, endpoint, environment, and queue namespace   |
+| `Detection/PermissionObserver.swift`                     | Authorization enum + observe-only protocol (engine implements) |
+| `Detection/ApplicationLifecycleObserver.swift`           | App activity observer for When In Use policy                   |
+| `Detection/RangingSessionState.swift`                    | Pure ranging policy state machine                              |
+| `Detection/DetectionEngine.swift`                        | Internal monitoring/ranging engine seam                        |
+| `Detection/DetectedBeacon.swift`                         | Internal platform-neutral ranging DTO                          |
+| `Detection/CoreLocationDetectionEngine.swift`            | Core Location monitor/ranging + auth observer (one manager)    |
+| `Detection/ObservationWindowStore.swift`                 | Pure 60s observation-window aggregation                        |
+| `Detection/ActiveBeaconStore.swift`                      | In-memory active beacon snapshot                               |
+| `Detection/LocationFix.swift`                            | SDK-owned cached location snapshot                             |
+| `Detection/LocationProviding.swift`                      | Location cache protocol                                        |
+| `Detection/CoreLocationProvider.swift`                   | Hybrid coarse / significant-change location                    |
+| `Persistence/DurableDetectionQueue.swift`                | Actor-isolated persisted detection queue                       |
+| `PrivacyInfo.xcprivacy`                                  | App Store privacy manifest (Device ID + Precise Location)      |
+| `Networking/UploadInterfaces.swift`                      | Auth/transport upload contracts                                |
+| `Networking/BeaconUploadPayload.swift`                   | `{ detections: [flat objects…] }` encoder + snake_case keys    |
+| `Networking/DeviceIdentifying.swift`                     | IDFV (`device_id`) seam for upload stamping                    |
+| `Networking/HTTPIngestUploadTransport.swift`             | Live ingest POST with Bearer auth                              |
+| `Networking/HTTPIngestStatusClassifier.swift`            | HTTP status → retry / dead-letter / refresh classification     |
+| `Networking/UploadFailurePolicy.swift`                   | Maps transport/auth errors to flush outcomes                   |
+| `Networking/RetryAfterHeader.swift`                      | Parse `Retry-After` for 429 backoff                            |
+| `Networking/NetworkPathObserver.swift`                   | Restart-safe connectivity observer                             |
+| `Networking/UploadCoordinator.swift`                     | Quiet debounce, max-age, full drain, bounded wake flush        |
+| `Networking/TokenBrokerAuthProvider.swift`               | In-memory Select token-broker authorization                    |
+| `Support/Clock.swift`                                    | Injectable time source                                         |
+| `Support/DelayedActionScheduler.swift`                   | Shared replaceable one-shot timer seam                         |
+| `Public/SelectBeaconDiagnostics.swift`                   | Public diagnostic events + host reporter protocol              |
+| `Support/DiagnosticsReporter.swift`                      | Forwarding / no-op diagnostics sink                            |
+| `Support/SDKDependencies.swift`                          | Internal live/test dependency composition                      |
+| `development-context.md`                                 | Authoritative product constraints                              |
+| `decisions.md`                                           | Short record of key decisions                                  |
+| `README.md`                                              | Host integration instructions                                  |
 
 ## Maintenance rules
 

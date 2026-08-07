@@ -73,19 +73,39 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             }
         }
 
-        func deadLetter(ids: [UUID]) async throws {
+        func deadLetter(ids: [UUID], now: Date) async throws -> EnqueueResult {
             let idSet = Set(ids)
             let moving = records.filter { idSet.contains($0.id) }
             records.removeAll { idSet.contains($0.id) }
             deadLetters.append(contentsOf: moving)
+            let evicted = pruneDeadLetters(now: now)
+            return EnqueueResult(evictedCount: evicted)
         }
 
-        func deadLetteredRecords() async throws -> [QueuedDetection] {
-            deadLetters
+        func deadLetteredRecords(now: Date) async throws -> DeadLetterSnapshot {
+            let evicted = pruneDeadLetters(now: now)
+            return DeadLetterSnapshot(records: deadLetters, evictedCount: evicted)
         }
 
         func clear() async throws {
             records.removeAll()
+        }
+
+        func clearDeadLetters() async throws {
+            deadLetters.removeAll()
+        }
+
+        private func pruneDeadLetters(now: Date) -> Int {
+            var evicted = 0
+            let cutoff = now.addingTimeInterval(-maxRecordAge)
+            let beforeAge = deadLetters.count
+            deadLetters.removeAll { $0.queuedAt < cutoff }
+            evicted += beforeAge - deadLetters.count
+            while deadLetters.count > maxQueueSize {
+                deadLetters.removeFirst()
+                evicted += 1
+            }
+            return evicted
         }
     }
 
@@ -160,18 +180,23 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             }
         }
 
-        func deadLetter(ids: [UUID]) async throws {
+        func deadLetter(ids: [UUID], now: Date) async throws -> EnqueueResult {
+            _ = now
             let idSet = Set(ids)
             records.removeAll { idSet.contains($0.id) }
+            return .none
         }
 
-        func deadLetteredRecords() async throws -> [QueuedDetection] {
-            []
+        func deadLetteredRecords(now: Date) async throws -> DeadLetterSnapshot {
+            _ = now
+            return DeadLetterSnapshot(records: [], evictedCount: 0)
         }
 
         func clear() async throws {
             records.removeAll()
         }
+
+        func clearDeadLetters() async throws {}
 
         func waitForWriteStart() async {
             if availableStarts > 0 {
@@ -603,7 +628,7 @@ final class SelectBeaconAppSupportTests: XCTestCase {
             uploadAttemptCount: 0
         )
         _ = try await queue.enqueue(detection, now: clock.now)
-        try await queue.deadLetter(ids: [detection.id])
+        _ = try await queue.deadLetter(ids: [detection.id], now: clock.now)
 
         let deadBeforeClear = try await adapter.deadLetteredReports()
         XCTAssertEqual(deadBeforeClear.map(\.minor), [7])
@@ -612,6 +637,91 @@ final class SelectBeaconAppSupportTests: XCTestCase {
         let deadAfterClear = try await adapter.deadLetteredReports()
         XCTAssertTrue(pendingAfterClear.isEmpty)
         XCTAssertEqual(deadAfterClear.map(\.minor), [7])
+    }
+
+    func testClearDeadLetteredReportsEmptiesSnapshotAndLeavesPending() async throws {
+        let queue = InMemoryQueue()
+        let clock = MutableClock(now: Date(timeIntervalSince1970: 1_000_000))
+        let sdk = SelectBeaconSDK(
+            engine: { FakeEngine() },
+            permissionObserver: { FakePermissionObserver() },
+            lifecycleObserver: { FakeLifecycleObserver() },
+            clock: clock,
+            queue: { _ in queue },
+            networkPathObserver: { FakeNetworkPathObserver() },
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
+        )
+        let adapter = SelectBeaconAppSupport(sdk: sdk)
+        let emptied = expectation(description: "Dead letter snapshot emptied")
+        adapter.onDeadLetteredReportsChanged = { reports in
+            if reports.isEmpty {
+                emptied.fulfill()
+            }
+        }
+
+        let pending = QueuedDetection(
+            id: UUID(),
+            uuid: SDKConfiguration.default.monitoredUUIDs[0],
+            major: 1,
+            minor: 3,
+            bestRSSI: -50,
+            latestTimestamp: clock.now,
+            windowStartedAt: clock.now.addingTimeInterval(-60),
+            observationCount: 2,
+            location: nil,
+            queuedAt: clock.now,
+            uploadAttemptCount: 0
+        )
+        let doomed = QueuedDetection(
+            id: UUID(),
+            uuid: SDKConfiguration.default.monitoredUUIDs[0],
+            major: 1,
+            minor: 8,
+            bestRSSI: -60,
+            latestTimestamp: clock.now,
+            windowStartedAt: clock.now.addingTimeInterval(-60),
+            observationCount: 1,
+            location: nil,
+            queuedAt: clock.now,
+            uploadAttemptCount: 0
+        )
+        _ = try await queue.enqueue(pending, now: clock.now)
+        _ = try await queue.enqueue(doomed, now: clock.now)
+        _ = try await queue.deadLetter(ids: [doomed.id], now: clock.now)
+
+        let deadBeforeClear = try await adapter.deadLetteredReports()
+        XCTAssertEqual(deadBeforeClear.map(\.minor), [8])
+        try await adapter.clearDeadLetteredReports()
+        await fulfillment(of: [emptied], timeout: 1)
+
+        let remainingPending = try await adapter.pendingReports()
+        let remainingDead = try await adapter.deadLetteredReports()
+        XCTAssertEqual(remainingPending.map(\.minor), [3])
+        XCTAssertTrue(remainingDead.isEmpty)
+        XCTAssertTrue(queue.deadLetters.isEmpty)
+        XCTAssertEqual(queue.records.map(\.minor), [3])
+    }
+
+    func testClearDeadLetteredReportsRefusesWhileDetectionActive() async throws {
+        let queue = InMemoryQueue()
+        let sdk = SelectBeaconSDK(
+            engine: { FakeEngine() },
+            permissionObserver: { FakePermissionObserver() },
+            lifecycleObserver: { FakeLifecycleObserver() },
+            clock: MutableClock(now: Date(timeIntervalSince1970: 1_000_000)),
+            queue: { _ in queue },
+            networkPathObserver: { FakeNetworkPathObserver() },
+            identity: AppIdentity(appKey: "select-app", appSecret: "test-secret")
+        )
+        let adapter = SelectBeaconAppSupport(sdk: sdk)
+        sdk.start()
+
+        do {
+            try await adapter.clearDeadLetteredReports()
+            XCTFail("Expected clear to refuse while detection is active")
+        } catch let error as PendingReportsClearError {
+            XCTAssertEqual(error, .detectionActive)
+        }
     }
 
     func testCurrentBeaconsPreserveIdentityOrder() async {

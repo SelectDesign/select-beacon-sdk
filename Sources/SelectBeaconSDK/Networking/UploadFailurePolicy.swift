@@ -25,7 +25,16 @@ enum UploadFailurePolicy: Equatable, Sendable {
                 return .retryable(backoff: .exponential)
             }
         }
-        // Token acquisition and other failures are retryable.
+        if let auth = error as? TokenBrokerAuthError {
+            switch auth {
+            case .rateLimited(let retryAfter):
+                return .retryable(backoff: .rateLimited(retryAfter: retryAfter))
+            case .invalidEndpoint, .networkRequestFailed, .invalidHTTPResponse,
+                 .unexpectedStatusCode, .invalidResponse:
+                return .retryable(backoff: .exponential)
+            }
+        }
+        // Unknown failures are retryable with exponential backoff.
         return .retryable(backoff: .exponential)
     }
 }

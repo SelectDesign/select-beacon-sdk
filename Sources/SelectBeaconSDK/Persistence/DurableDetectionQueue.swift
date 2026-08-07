@@ -186,6 +186,12 @@ struct QueuedDetection: Codable, Equatable, Sendable {
     }
 }
 
+/// Result of reading the dead-letter store after applying retention bounds.
+struct DeadLetterSnapshot: Equatable, Sendable {
+    let records: [QueuedDetection]
+    let evictedCount: Int
+}
+
 /// Storage boundary for reportable detections.
 protocol DurableDetectionQueue: Sendable {
     func enqueue(_ detection: QueuedDetection, now: Date) async throws -> EnqueueResult
@@ -194,13 +200,17 @@ protocol DurableDetectionQueue: Sendable {
     func acknowledge(ids: [UUID]) async throws
     /// Increments `uploadAttemptCount` by one for each matching pending id and persists.
     func recordUploadAttempts(for ids: [UUID]) async throws
-    /// Moves matching pending records into the durable dead-letter store.
-    func deadLetter(ids: [UUID]) async throws
-    /// Dead-lettered records retained for diagnostics (not uploaded).
-    func deadLetteredRecords() async throws -> [QueuedDetection]
-    /// Empties the durable queue. Implementations must succeed even when the
+    /// Moves matching pending records into the durable dead-letter store, then
+    /// applies the same age/count retention bounds used for pending.
+    func deadLetter(ids: [UUID], now: Date) async throws -> EnqueueResult
+    /// Dead-lettered records retained for diagnostics (not uploaded). Applies
+    /// age/count retention using `now` so oversized legacy files shrink on load.
+    func deadLetteredRecords(now: Date) async throws -> DeadLetterSnapshot
+    /// Empties the durable pending queue. Implementations must succeed even when the
     /// on-disk payload is corrupted so hosts can recover from unreadable state.
     func clear() async throws
+    /// Empties the durable dead-letter store (diagnostics only; never re-uploaded).
+    func clearDeadLetters() async throws
 }
 
 extension DurableDetectionQueue {
@@ -304,16 +314,8 @@ actor FileDetectionQueue: DurableDetectionQueue {
         try loadIfNeeded()
         let previousRecords = records
         var evicted = 0
-
-        let cutoff = now.addingTimeInterval(-maxRecordAge)
-        let beforeAge = records.count
-        records.removeAll { $0.queuedAt < cutoff }
-        evicted += beforeAge - records.count
-
-        while records.count >= maxQueueSize {
-            records.removeFirst()
-            evicted += 1
-        }
+        // Leave room for the new append (`>=` → at most maxQueueSize - 1 before append).
+        evicted += pruneAgeAndCount(&records, now: now, maxCount: maxQueueSize - 1)
 
         records.append(detection)
         do {
@@ -359,16 +361,28 @@ actor FileDetectionQueue: DurableDetectionQueue {
         }
     }
 
-    func deadLetter(ids: [UUID]) async throws {
+    func deadLetter(ids: [UUID], now: Date) async throws -> EnqueueResult {
         try loadIfNeeded()
         try loadDeadLettersIfNeeded()
         let previousRecords = records
         let previousDeadLetters = deadLetters
         let idSet = Set(ids)
         let moving = records.filter { idSet.contains($0.id) }
-        guard !moving.isEmpty else { return }
+        guard !moving.isEmpty else {
+            let evicted = pruneDeadLetters(now: now)
+            if evicted > 0 {
+                do {
+                    try persistDeadLetters()
+                } catch {
+                    deadLetters = previousDeadLetters
+                    throw error
+                }
+            }
+            return EnqueueResult(evictedCount: evicted)
+        }
         records.removeAll { idSet.contains($0.id) }
         deadLetters.append(contentsOf: moving)
+        let evicted = pruneDeadLetters(now: now)
         do {
             try persist()
             try persistDeadLetters()
@@ -377,11 +391,22 @@ actor FileDetectionQueue: DurableDetectionQueue {
             deadLetters = previousDeadLetters
             throw error
         }
+        return EnqueueResult(evictedCount: evicted)
     }
 
-    func deadLetteredRecords() async throws -> [QueuedDetection] {
+    func deadLetteredRecords(now: Date) async throws -> DeadLetterSnapshot {
         try loadDeadLettersIfNeeded()
-        return deadLetters
+        let previousDeadLetters = deadLetters
+        let evicted = pruneDeadLetters(now: now)
+        if evicted > 0 {
+            do {
+                try persistDeadLetters()
+            } catch {
+                deadLetters = previousDeadLetters
+                throw error
+            }
+        }
+        return DeadLetterSnapshot(records: deadLetters, evictedCount: evicted)
     }
 
     func clear() async throws {
@@ -396,6 +421,47 @@ actor FileDetectionQueue: DurableDetectionQueue {
             hasLoaded = previouslyLoaded
             throw error
         }
+    }
+
+    func clearDeadLetters() async throws {
+        let previousDeadLetters = deadLetters
+        let previouslyLoaded = hasLoadedDeadLetters
+        deadLetters = []
+        hasLoadedDeadLetters = true
+        do {
+            try persistDeadLetters()
+        } catch {
+            deadLetters = previousDeadLetters
+            hasLoadedDeadLetters = previouslyLoaded
+            throw error
+        }
+    }
+
+    /// Drops aged and overflow records in place; returns how many were removed.
+    ///
+    /// `maxCount` is the inclusive maximum length after pruning (`while count > maxCount`).
+    private func pruneAgeAndCount(
+        _ records: inout [QueuedDetection],
+        now: Date,
+        maxCount: Int
+    ) -> Int {
+        var evicted = 0
+        let cutoff = now.addingTimeInterval(-maxRecordAge)
+        let beforeAge = records.count
+        records.removeAll { $0.queuedAt < cutoff }
+        evicted += beforeAge - records.count
+
+        let boundedMax = max(0, maxCount)
+        while records.count > boundedMax {
+            records.removeFirst()
+            evicted += 1
+        }
+        return evicted
+    }
+
+    /// Drops aged and overflow dead-letter records in place; returns how many were removed.
+    private func pruneDeadLetters(now: Date) -> Int {
+        pruneAgeAndCount(&deadLetters, now: now, maxCount: maxQueueSize)
     }
 
     private func loadIfNeeded() throws {

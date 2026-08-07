@@ -30,6 +30,7 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
 
         enum Outcome {
             case token(value: String, tokenType: String, expiresIn: TimeInterval, statusCode: Int)
+            case httpStatus(statusCode: Int, headerFields: [String: String]?)
             case networkFailure
         }
 
@@ -54,20 +55,34 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
             }
 
             let outcome = outcomes.removeFirst()
+            let url = request.url ?? URL(fileURLWithPath: "/")
             switch outcome {
             case .networkFailure:
                 throw TokenBrokerAuthError.networkRequestFailed
+            case .httpStatus(let statusCode, let headerFields):
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: statusCode,
+                    httpVersion: nil,
+                    headerFields: headerFields
+                ) ?? URLResponse(
+                    url: url,
+                    mimeType: nil,
+                    expectedContentLength: 0,
+                    textEncodingName: nil
+                )
+                return (Data(), response)
             case .token(let value, let tokenType, let expiresIn, let statusCode):
                 let body = try JSONEncoder().encode(
                     TokenPayload(accessToken: value, tokenType: tokenType, expiresIn: expiresIn)
                 )
                 let response = HTTPURLResponse(
-                    url: request.url ?? URL(fileURLWithPath: "/"),
+                    url: url,
                     statusCode: statusCode,
                     httpVersion: nil,
                     headerFields: nil
                 ) ?? URLResponse(
-                    url: request.url ?? URL(fileURLWithPath: "/"),
+                    url: url,
                     mimeType: nil,
                     expectedContentLength: 0,
                     textEncodingName: nil
@@ -205,6 +220,44 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
             XCTFail("Expected token retrieval to fail")
         } catch let error as TokenBrokerAuthError {
             XCTAssertEqual(error, .networkRequestFailed)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testRateLimitedHonorsRetryAfterHeader() async throws {
+        let client = FakeHTTPDataLoader(outcomes: [
+            .httpStatus(statusCode: 429, headerFields: ["Retry-After": "45"]),
+        ])
+        let provider = try makeProvider(
+            client: client,
+            clock: MutableClock(now: initialDate)
+        )
+
+        do {
+            _ = try await provider.validAuthorization()
+            XCTFail("Expected rate-limited token retrieval to fail")
+        } catch let error as TokenBrokerAuthError {
+            XCTAssertEqual(error, .rateLimited(retryAfter: 45))
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testRateLimitedWithoutRetryAfterUsesNilDelay() async throws {
+        let client = FakeHTTPDataLoader(outcomes: [
+            .httpStatus(statusCode: 429, headerFields: nil),
+        ])
+        let provider = try makeProvider(
+            client: client,
+            clock: MutableClock(now: initialDate)
+        )
+
+        do {
+            _ = try await provider.validAuthorization()
+            XCTFail("Expected rate-limited token retrieval to fail")
+        } catch let error as TokenBrokerAuthError {
+            XCTAssertEqual(error, .rateLimited(retryAfter: nil))
         } catch {
             XCTFail("Unexpected error type: \(error)")
         }

@@ -19,7 +19,10 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "SelectBeaconSDK"
+            name: "SelectBeaconSDK",
+            resources: [
+                .copy("PrivacyInfo.xcprivacy")
+            ]
         ),
         .target(
             name: "SelectBeaconAppSupport",

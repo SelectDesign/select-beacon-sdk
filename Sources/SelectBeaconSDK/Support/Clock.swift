@@ -1,3 +1,4 @@
+/// Injectable clock so observation windows and upload timing are testable.
 import Foundation
 
 protocol Clock {

@@ -4,44 +4,6 @@ import CoreLocation
 
 @MainActor
 final class CoreLocationDetectionEngineTests: XCTestCase {
-    final class FakeLocationManager: LocationManaging {
-        var delegate: CLLocationManagerDelegate?
-        private(set) var startedConstraints: [CLBeaconIdentityConstraint] = []
-        private(set) var stoppedConstraints: [CLBeaconIdentityConstraint] = []
-        private(set) var startedRegions: [CLRegion] = []
-        private(set) var stoppedRegions: [CLRegion] = []
-        private(set) var requestedStateRegions: [CLRegion] = []
-
-        func clearRangingLog() {
-            startedConstraints = []
-            stoppedConstraints = []
-        }
-
-        func startRangingBeacons(satisfying constraint: CLBeaconIdentityConstraint) {
-            startedConstraints.append(constraint)
-        }
-
-        func stopRangingBeacons(satisfying constraint: CLBeaconIdentityConstraint) {
-            stoppedConstraints.append(constraint)
-        }
-
-        func startMonitoring(for region: CLRegion) {
-            startedRegions.append(region)
-        }
-
-        func stopMonitoring(for region: CLRegion) {
-            stoppedRegions.append(region)
-        }
-
-        func requestState(for region: CLRegion) {
-            requestedStateRegions.append(region)
-        }
-
-        var monitoredBeaconUUIDs: [UUID] {
-            startedRegions.compactMap { ($0 as? CLBeaconRegion)?.uuid }
-        }
-    }
-
     private let selectUUID = SDKConfiguration.default.monitoredUUIDs[0]
 
     private func makeRegion(uuid: UUID = SDKConfiguration.default.monitoredUUIDs[0]) -> CLBeaconRegion {
@@ -50,7 +12,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
 
     /// REGRESSION GUARD: ranging-only engines must fail this test.
     func testStartEstablishesRegionMonitoringNotRangingAlone() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
 
         engine.start(uuids: [selectUUID])
@@ -65,7 +27,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testEngineRangesRequestedSelectConstraintInForeground() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
 
         engine.start(uuids: [selectUUID])
@@ -83,7 +45,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testBackgroundStartDoesNotBeginContinuousRanging() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         engine.setApplicationActive(false)
 
@@ -94,7 +56,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testDidEnterRegionStartsRanging() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         engine.setApplicationActive(false)
         engine.start(uuids: [selectUUID])
@@ -106,7 +68,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testDidExitRegionStopsRanging() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         engine.setApplicationActive(false)
         engine.start(uuids: [selectUUID])
@@ -119,7 +81,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testDidDetermineStateInsideStartsRanging() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         engine.setApplicationActive(false)
         engine.start(uuids: [selectUUID])
@@ -134,7 +96,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testDidDetermineStateOutsideDoesNotStartRanging() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         engine.setApplicationActive(false)
         engine.start(uuids: [selectUUID])
@@ -150,7 +112,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testDidDetermineStateOutsideStopsActiveRanging() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         engine.setApplicationActive(false)
         engine.start(uuids: [selectUUID])
@@ -170,7 +132,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testStopRemovesAllMonitoredRegions() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         let second = UUID()
         engine.start(uuids: [selectUUID, second])
@@ -183,7 +145,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testSetApplicationActiveFalseStopsRangingButKeepsMonitoring() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         engine.start(uuids: [selectUUID])
         XCTAssertEqual(locationManager.startedConstraints.count, 1)
@@ -197,7 +159,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testSetApplicationActiveTrueRestartsRanging() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         engine.start(uuids: [selectUUID])
         engine.setApplicationActive(false)
@@ -209,7 +171,7 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
     }
 
     func testMonitoredRegionCountRespectsBudgetCap() {
-        let locationManager = FakeLocationManager()
+        let locationManager = FakeBeaconLocationManager()
         let engine = CoreLocationDetectionEngine(locationManager: locationManager)
         let many = (0..<CoreLocationDetectionEngine.maxMonitoredBeaconUUIDs + 3).map { _ in UUID() }
 
@@ -223,5 +185,25 @@ final class CoreLocationDetectionEngineTests: XCTestCase {
             locationManager.startedRegions.count,
             CoreLocationDetectionEngine.maxMonitoredBeaconUUIDs
         )
+    }
+
+    func testAuthorizationReflectsLocationManagerStatus() {
+        let locationManager = FakeBeaconLocationManager()
+        locationManager.authorizationStatus = .authorizedWhenInUse
+        let engine = CoreLocationDetectionEngine(locationManager: locationManager)
+
+        XCTAssertEqual(engine.authorization, .whenInUse)
+    }
+
+    func testAuthorizationChangeNotifiesObserver() {
+        let locationManager = FakeBeaconLocationManager()
+        let engine = CoreLocationDetectionEngine(locationManager: locationManager)
+        var seen: [LocationAuthorization] = []
+        engine.onAuthorizationChanged = { seen.append($0) }
+
+        locationManager.setAuthorization(.denied)
+
+        XCTAssertEqual(seen, [.unavailable])
+        XCTAssertEqual(engine.authorization, .unavailable)
     }
 }

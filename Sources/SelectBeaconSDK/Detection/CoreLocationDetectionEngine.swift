@@ -5,6 +5,7 @@ import CoreLocation
 @MainActor
 protocol LocationManaging: AnyObject {
     var delegate: CLLocationManagerDelegate? { get set }
+    var authorizationStatus: CLAuthorizationStatus { get }
     func startRangingBeacons(satisfying constraint: CLBeaconIdentityConstraint)
     func stopRangingBeacons(satisfying constraint: CLBeaconIdentityConstraint)
     func startMonitoring(for region: CLRegion)
@@ -20,8 +21,9 @@ extension CLLocationManager: @MainActor LocationManaging {}
 ///
 /// Region monitoring is the wake layer (can resume a suspended app under Always
 /// authorization when the host enables background location). Ranging via
-/// `CLBeaconIdentityConstraint` captures major/minor/RSSI. Both use one
-/// `CLLocationManager` / delegate — no CoreBluetooth.
+/// `CLBeaconIdentityConstraint` captures major/minor/RSSI. The same
+/// `CLLocationManager` / delegate also observes host authorization — no separate
+/// permission-only manager and no CoreBluetooth.
 ///
 /// Real background wakes also require the host app's location background mode
 /// (`UIBackgroundModes` / capability). That is a VIP/BizStride configuration
@@ -29,13 +31,14 @@ extension CLLocationManager: @MainActor LocationManaging {}
 ///
 /// This class intentionally owns no reporting or persistence policy.
 @MainActor
-final class CoreLocationDetectionEngine: NSObject, DetectionEngine {
+final class CoreLocationDetectionEngine: NSObject, DetectionEngine, PermissionObserver {
 
     /// Soft cap on beacon regions this SDK starts. iOS allows 20 monitored
     /// regions per app; the budget is shared with the host (Footmarks, etc.).
     static let maxMonitoredBeaconUUIDs = 5
 
     var onBeacons: (([DetectedBeacon]) -> Void)?
+    var onAuthorizationChanged: ((LocationAuthorization) -> Void)?
 
     private let locationManager: any LocationManaging
     private var monitoredRegionsByUUID: [UUID: CLBeaconRegion] = [:]
@@ -48,6 +51,10 @@ final class CoreLocationDetectionEngine: NSObject, DetectionEngine {
         self.locationManager = locationManager
         super.init()
         locationManager.delegate = self
+    }
+
+    var authorization: LocationAuthorization {
+        LocationAuthorization(status: locationManager.authorizationStatus)
     }
 
     func start(uuids: [UUID]) {
@@ -143,6 +150,10 @@ final class CoreLocationDetectionEngine: NSObject, DetectionEngine {
 }
 
 extension CoreLocationDetectionEngine: @MainActor CLLocationManagerDelegate {
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        onAuthorizationChanged?(authorization)
+    }
+
     func locationManager(
         _ manager: CLLocationManager,
         didRange beacons: [CLBeacon],

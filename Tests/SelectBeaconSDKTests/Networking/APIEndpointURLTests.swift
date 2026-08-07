@@ -44,4 +44,20 @@ final class APIEndpointURLTests: XCTestCase {
         XCTAssertEqual(tokenConfig?.appKey, "select-app-key")
         XCTAssertEqual(tokenConfig?.appSecret, "test-secret")
     }
+
+    func testCleartextHTTPBaseIsNotUsable() {
+        let endpoint = APIEndpoint(baseURL: "http://staging.select.example.com")
+        XCTAssertNil(endpoint.authURL)
+        XCTAssertNil(endpoint.ingestURL)
+        XCTAssertFalse(endpoint.isUsableHTTPBase)
+    }
+
+    func testCleartextHTTPStagingEnvironmentDoesNotEnable() {
+        let identity = AppIdentity(appKey: "select-app-key", appSecret: "test-secret")!
+        let configuration = SDKEnablementConfiguration(
+            identity: identity,
+            environment: .staging(baseURL: URL(string: "http://staging.select.example.com")!)
+        )
+        XCTAssertNil(configuration)
+    }
 }

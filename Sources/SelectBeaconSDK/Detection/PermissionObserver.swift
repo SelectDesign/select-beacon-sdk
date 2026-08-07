@@ -1,5 +1,9 @@
 import CoreLocation
 
+/// Maps host-owned Core Location authorization into SDK policy states.
+///
+/// The SDK never requests permission. Live observation is owned by
+/// `CoreLocationDetectionEngine` (shared beacon `CLLocationManager`).
 enum LocationAuthorization: Equatable {
     case notDetermined
     case whenInUse
@@ -26,28 +30,4 @@ enum LocationAuthorization: Equatable {
 protocol PermissionObserver: AnyObject {
     var authorization: LocationAuthorization { get }
     var onAuthorizationChanged: ((LocationAuthorization) -> Void)? { get set }
-}
-
-/// Observes host-owned Core Location authorization. It never asks for permission.
-@MainActor
-final class CoreLocationPermissionObserver: NSObject, PermissionObserver {
-    var onAuthorizationChanged: ((LocationAuthorization) -> Void)?
-
-    private let locationManager: CLLocationManager
-
-    init(locationManager: CLLocationManager = CLLocationManager()) {
-        self.locationManager = locationManager
-        super.init()
-        self.locationManager.delegate = self
-    }
-
-    var authorization: LocationAuthorization {
-        LocationAuthorization(status: locationManager.authorizationStatus)
-    }
-}
-
-extension CoreLocationPermissionObserver: @MainActor CLLocationManagerDelegate {
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        onAuthorizationChanged?(authorization)
-    }
 }

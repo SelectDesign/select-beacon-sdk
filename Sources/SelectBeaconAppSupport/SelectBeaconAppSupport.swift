@@ -1,11 +1,10 @@
-@_spi(SelectApp) import SelectBeaconSDK
-import Foundation
-
 /// Select-owned views over beacon data held by `SelectBeaconSDK`.
 ///
 /// This target is the only normal consumer of the core module's `SelectApp`
-/// SPI. App code imports this product rather than using `@_spi` itself. It
-/// converts internal SDK records into stable, app-facing snapshot models.
+/// SPI. App code imports this product rather than using `@_spi` itself.
+@_spi(SelectApp) import SelectBeaconSDK
+import Foundation
+
 @MainActor
 public final class SelectBeaconAppSupport {
     /// The adapter instance for apps using `SelectBeaconSDK.shared`.
@@ -51,7 +50,7 @@ public final class SelectBeaconAppSupport {
     /// re-uploaded. This is a change notification, not an initial replay. Call
     /// `deadLetteredReports()` during application startup to load records
     /// persisted by an earlier process. `clearPendingReports()` does not clear
-    /// dead letters.
+    /// dead letters; use `clearDeadLetteredReports()` for that.
     public var onDeadLetteredReportsChanged: (([PendingBeaconReport]) -> Void)?
 
     /// Called whenever `isStopFinalizePending` changes.
@@ -99,9 +98,10 @@ public final class SelectBeaconAppSupport {
     /// Returns reports removed from the pending FIFO after non-retryable failure
     /// or max upload attempts.
     ///
-    /// Dead-lettered records are not re-uploaded. `clearPendingReports()` does
-    /// not clear this list. The method is async and may throw for the same
-    /// durable-store reasons as `pendingReports()`.
+    /// Dead-lettered records are not re-uploaded. The store is bounded by the
+    /// same max size/age as pending. `clearPendingReports()` does not clear
+    /// this list — use `clearDeadLetteredReports()`. The method is async and
+    /// may throw for the same durable-store reasons as `pendingReports()`.
     public func deadLetteredReports() async throws -> [PendingBeaconReport] {
         let reports = try await sdk.selectDeadLetteredReports()
         return reports.map { PendingBeaconReport($0) }
@@ -117,14 +117,31 @@ public final class SelectBeaconAppSupport {
         do {
             try await sdk.selectClearPendingReports()
         } catch let error as SelectPendingReportsClearError {
-            switch error {
-            case .notConfigured:
-                throw PendingReportsClearError.notConfigured
-            case .detectionActive:
-                throw PendingReportsClearError.detectionActive
-            case .stopFinalizePending:
-                throw PendingReportsClearError.stopFinalizePending
-            }
+            throw mapClearError(error)
+        }
+    }
+
+    /// Empties the durable dead-letter store and publishes
+    /// `onDeadLetteredReportsChanged([])`.
+    ///
+    /// Same gates as `clearPendingReports()` (configured, detection stopped,
+    /// stop-finalize settled). Does not clear pending reports.
+    public func clearDeadLetteredReports() async throws {
+        do {
+            try await sdk.selectClearDeadLetteredReports()
+        } catch let error as SelectPendingReportsClearError {
+            throw mapClearError(error)
+        }
+    }
+
+    private func mapClearError(_ error: SelectPendingReportsClearError) -> PendingReportsClearError {
+        switch error {
+        case .notConfigured:
+            return .notConfigured
+        case .detectionActive:
+            return .detectionActive
+        case .stopFinalizePending:
+            return .stopFinalizePending
         }
     }
 
@@ -220,7 +237,7 @@ public struct PendingBeaconReport: Equatable, Sendable {
     }
 }
 
-/// Why `clearPendingReports()` refused to run.
+/// Why `clearPendingReports()` or `clearDeadLetteredReports()` refused to run.
 public enum PendingReportsClearError: Error, Equatable, Sendable {
     /// `SelectBeaconSDK.configure` has not succeeded for this process.
     case notConfigured

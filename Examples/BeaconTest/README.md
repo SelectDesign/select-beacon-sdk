@@ -4,13 +4,19 @@ Build this source into an iOS harness app that imports both `SelectBeaconSDK`
 and the Select-owned `SelectBeaconAppSupport` product. Use a debug-only app
 key; do not commit production keys.
 
-The harness UI has three beacon sections plus session controls (see
+The harness UI has four beacon sections plus session controls (see
 [CONSUMER_UI_PROMPT.md](CONSUMER_UI_PROMPT.md)):
 
 - **Session** — Start/Stop; Start stays disabled while `isStopFinalizePending`
 - **In range** — active beacons
 - **Open summaries** — in-progress 60s windows
 - **Queued for upload** — durable FIFO (drains after debug auto-ack flush)
+- **Dead letter** — non-retryable / max-attempt failures (not re-uploaded)
+
+**Select harness only:** this example uses `@_spi(SelectApp)` for
+`selectInstallDebugAutoAckUploadSeams()` so queued rows clear without a live
+ingest host. VIP BizStride must **not** copy that call or import
+`@_spi(SelectApp)` / `SelectBeaconAppSupport`.
 
 Run the following checks on both a physical iPhone and iPad:
 
@@ -30,11 +36,14 @@ Run the following checks on both a physical iPhone and iPad:
 7. Change permission from Always or When In Use to denied/restricted; ranging stops
    quietly. Restore permission and confirm it resumes only after `start()` intent exists.
 8. With When In Use authorization, background the app and confirm detections stop;
-   foreground it and confirm they resume.
-9. With Always authorization and the host's location background mode enabled, verify
-   region-monitoring wakes can resume detection (short ranging bursts) while the
-   app is backgrounded. Force-closing the app is not a supported
-   background-detection scenario. Background upload after a wake should attempt
-   at most one batch; remaining queue rows stay until a later full drain.
+   foreground it and confirm they resume. With the screen off and the app
+   inactive, no new detections should appear until the app is active again.
+9. With Always authorization **and** the host's location background mode enabled,
+   verify region-monitoring wakes can resume detection (short ranging bursts)
+   while the app is backgrounded, including with the screen off near a beacon
+   (eventually enqueue after a burst — not continuous ranging). Force-closing
+   the app is not a supported background-detection scenario. Background upload
+   after a wake should attempt at most one batch; remaining queue rows stay
+   until a later full drain.
 10. Disable connectivity, detect a beacon through window close, relaunch, and verify
     the durable queue still shows pending reports until a successful ack path runs.

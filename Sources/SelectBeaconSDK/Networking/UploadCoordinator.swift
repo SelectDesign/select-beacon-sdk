@@ -352,8 +352,14 @@ final class UploadCoordinator {
 
     private func deadLetter(batch: [QueuedDetection], queue: any DurableDetectionQueue) async {
         do {
-            try await queue.deadLetter(ids: batch.map(\.id))
+            let result = try await queue.deadLetter(ids: batch.map(\.id), now: clock.now)
             diagnosticsReporter.record(.uploadDeadLettered)
+            if result.evictedCount > 0 {
+                diagnosticsReporter.record(
+                    .durableQueueEvicted,
+                    error: DiagnosticNotice("dead-letter evicted \(result.evictedCount)")
+                )
+            }
             await onQueueAcknowledged?()
             await refreshMaxAgeSchedule()
         } catch {

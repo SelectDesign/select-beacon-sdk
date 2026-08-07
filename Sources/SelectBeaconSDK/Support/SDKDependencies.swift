@@ -1,9 +1,15 @@
 import Foundation
 
+/// Injectable factories for the live SDK graph (engine, queue, upload, clocks).
+///
+/// Tests construct this via `SelectBeaconSDK`'s test initializer. Live
+/// `permissionObserverFactory` is `nil` so auth observation uses the detection
+/// engine's shared `CLLocationManager` (two-manager design).
 @MainActor
 struct SDKDependencies {
     let engineFactory: () -> DetectionEngine
-    let permissionObserverFactory: () -> PermissionObserver
+    /// When nil, the facade uses the detection engine as `PermissionObserver`.
+    let permissionObserverFactory: (() -> PermissionObserver)?
     let lifecycleObserverFactory: () -> ApplicationLifecycleObserving
     let queueFactory: (String) -> any DurableDetectionQueue
     let locationProviderFactory: () -> LocationProviding
@@ -17,20 +23,22 @@ struct SDKDependencies {
     let clock: Clock
     let diagnosticsReporter: DiagnosticsReporting
 
-    static let live = SDKDependencies(
-        engineFactory: { CoreLocationDetectionEngine() },
-        permissionObserverFactory: { CoreLocationPermissionObserver() },
-        lifecycleObserverFactory: { ApplicationLifecycleObserver() },
-        queueFactory: { FileDetectionQueue(storageIdentifier: $0) },
-        locationProviderFactory: { CoreLocationProvider() },
-        authProviderFactory: { DeferredAuthProvider() },
-        uploadTransportFactory: { DeferredUploadTransport() },
-        networkPathObserverFactory: { NetworkPathObserver() },
-        quietDebounceSchedulerFactory: { TaskDelayedActionScheduler() },
-        maxAgeSchedulerFactory: { TaskDelayedActionScheduler() },
-        retryBackoffSchedulerFactory: { TaskDelayedActionScheduler() },
-        deviceIdentifierFactory: { VendorDeviceIdentifier() },
-        clock: SystemClock(),
-        diagnosticsReporter: NoopDiagnosticsReporter()
-    )
+    static func makeLive(diagnosticsReporter: DiagnosticsReporting) -> SDKDependencies {
+        SDKDependencies(
+            engineFactory: { CoreLocationDetectionEngine() },
+            permissionObserverFactory: nil,
+            lifecycleObserverFactory: { ApplicationLifecycleObserver() },
+            queueFactory: { FileDetectionQueue(storageIdentifier: $0) },
+            locationProviderFactory: { CoreLocationProvider() },
+            authProviderFactory: { DeferredAuthProvider() },
+            uploadTransportFactory: { DeferredUploadTransport() },
+            networkPathObserverFactory: { NetworkPathObserver() },
+            quietDebounceSchedulerFactory: { TaskDelayedActionScheduler() },
+            maxAgeSchedulerFactory: { TaskDelayedActionScheduler() },
+            retryBackoffSchedulerFactory: { TaskDelayedActionScheduler() },
+            deviceIdentifierFactory: { VendorDeviceIdentifier() },
+            clock: SystemClock(),
+            diagnosticsReporter: diagnosticsReporter
+        )
+    }
 }

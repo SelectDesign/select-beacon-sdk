@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 @testable import SelectBeaconSDK
 
 @MainActor
@@ -22,6 +23,53 @@ final class FakeEngine: DetectionEngine {
 
     func emit(_ beacons: [DetectedBeacon]) {
         onBeacons?(beacons)
+    }
+}
+
+/// Fake `LocationManaging` for `CoreLocationDetectionEngine` / live-auth facade tests.
+@MainActor
+final class FakeBeaconLocationManager: LocationManaging {
+    var delegate: CLLocationManagerDelegate?
+    var authorizationStatus: CLAuthorizationStatus = .authorizedAlways
+    private(set) var startedConstraints: [CLBeaconIdentityConstraint] = []
+    private(set) var stoppedConstraints: [CLBeaconIdentityConstraint] = []
+    private(set) var startedRegions: [CLRegion] = []
+    private(set) var stoppedRegions: [CLRegion] = []
+    private(set) var requestedStateRegions: [CLRegion] = []
+
+    func setAuthorization(_ status: CLAuthorizationStatus) {
+        authorizationStatus = status
+        (delegate as? CoreLocationDetectionEngine)?
+            .locationManagerDidChangeAuthorization(CLLocationManager())
+    }
+
+    func clearRangingLog() {
+        startedConstraints = []
+        stoppedConstraints = []
+    }
+
+    func startRangingBeacons(satisfying constraint: CLBeaconIdentityConstraint) {
+        startedConstraints.append(constraint)
+    }
+
+    func stopRangingBeacons(satisfying constraint: CLBeaconIdentityConstraint) {
+        stoppedConstraints.append(constraint)
+    }
+
+    func startMonitoring(for region: CLRegion) {
+        startedRegions.append(region)
+    }
+
+    func stopMonitoring(for region: CLRegion) {
+        stoppedRegions.append(region)
+    }
+
+    func requestState(for region: CLRegion) {
+        requestedStateRegions.append(region)
+    }
+
+    var monitoredBeaconUUIDs: [UUID] {
+        startedRegions.compactMap { ($0 as? CLBeaconRegion)?.uuid }
     }
 }
 
@@ -97,19 +145,39 @@ final class InMemoryQueue: DurableDetectionQueue {
         }
     }
 
-    func deadLetter(ids: [UUID]) async throws {
+    func deadLetter(ids: [UUID], now: Date) async throws -> EnqueueResult {
         let idSet = Set(ids)
         let moving = records.filter { idSet.contains($0.id) }
         records.removeAll { idSet.contains($0.id) }
         deadLetters.append(contentsOf: moving)
+        let evicted = pruneDeadLetters(now: now)
+        return EnqueueResult(evictedCount: evicted)
     }
 
-    func deadLetteredRecords() async throws -> [QueuedDetection] {
-        deadLetters
+    func deadLetteredRecords(now: Date) async throws -> DeadLetterSnapshot {
+        let evicted = pruneDeadLetters(now: now)
+        return DeadLetterSnapshot(records: deadLetters, evictedCount: evicted)
     }
 
     func clear() async throws {
         records.removeAll()
+    }
+
+    func clearDeadLetters() async throws {
+        deadLetters.removeAll()
+    }
+
+    private func pruneDeadLetters(now: Date) -> Int {
+        var evicted = 0
+        let cutoff = now.addingTimeInterval(-maxRecordAge)
+        let beforeAge = deadLetters.count
+        deadLetters.removeAll { $0.queuedAt < cutoff }
+        evicted += beforeAge - deadLetters.count
+        while deadLetters.count > maxQueueSize {
+            deadLetters.removeFirst()
+            evicted += 1
+        }
+        return evicted
     }
 }
 
@@ -131,55 +199,81 @@ final class FailingQueue: DurableDetectionQueue {
         throw WriteError()
     }
 
-    func deadLetter(ids: [UUID]) async throws {
+    func deadLetter(ids: [UUID], now: Date) async throws -> EnqueueResult {
         throw WriteError()
     }
 
-    func deadLetteredRecords() async throws -> [QueuedDetection] {
-        []
+    func deadLetteredRecords(now: Date) async throws -> DeadLetterSnapshot {
+        throw WriteError()
     }
 
     func clear() async throws {
+        throw WriteError()
+    }
+
+    func clearDeadLetters() async throws {
         throw WriteError()
     }
 }
 
 @MainActor
 final class UnreadableQueue: DurableDetectionQueue {
-    private var cleared = false
+    /// Pending store starts unreadable; dead-letter defaults readable so a
+    /// pending-only `clear()` can recover operational status in existing tests.
+    private var pendingReadable: Bool
+    private var deadLetterReadable: Bool
+
+    init(pendingReadable: Bool = false, deadLetterReadable: Bool = true) {
+        self.pendingReadable = pendingReadable
+        self.deadLetterReadable = deadLetterReadable
+    }
 
     func enqueue(_ detection: QueuedDetection, now: Date) async throws -> EnqueueResult {
-        guard !cleared else { return .none }
-        throw DurableDetectionQueueError.unreadableStoredDetections
+        guard pendingReadable else {
+            throw DurableDetectionQueueError.unreadableStoredDetections
+        }
+        return .none
     }
 
     func nextBatch(limit: Int) async throws -> [QueuedDetection] {
-        if cleared { return [] }
-        throw DurableDetectionQueueError.unreadableStoredDetections
+        guard pendingReadable else {
+            throw DurableDetectionQueueError.unreadableStoredDetections
+        }
+        return []
     }
 
     func acknowledge(ids: [UUID]) async throws {
-        guard !cleared else { return }
-        throw DurableDetectionQueueError.unreadableStoredDetections
+        guard pendingReadable else {
+            throw DurableDetectionQueueError.unreadableStoredDetections
+        }
     }
 
     func recordUploadAttempts(for ids: [UUID]) async throws {
-        guard !cleared else { return }
-        throw DurableDetectionQueueError.unreadableStoredDetections
+        guard pendingReadable else {
+            throw DurableDetectionQueueError.unreadableStoredDetections
+        }
     }
 
-    func deadLetter(ids: [UUID]) async throws {
-        guard !cleared else { return }
-        throw DurableDetectionQueueError.unreadableStoredDetections
+    func deadLetter(ids: [UUID], now: Date) async throws -> EnqueueResult {
+        guard pendingReadable else {
+            throw DurableDetectionQueueError.unreadableStoredDetections
+        }
+        return .none
     }
 
-    func deadLetteredRecords() async throws -> [QueuedDetection] {
-        if cleared { return [] }
-        throw DurableDetectionQueueError.unreadableStoredDetections
+    func deadLetteredRecords(now: Date) async throws -> DeadLetterSnapshot {
+        guard deadLetterReadable else {
+            throw DurableDetectionQueueError.unreadableStoredDetections
+        }
+        return DeadLetterSnapshot(records: [], evictedCount: 0)
     }
 
     func clear() async throws {
-        cleared = true
+        pendingReadable = true
+    }
+
+    func clearDeadLetters() async throws {
+        deadLetterReadable = true
     }
 }
 
@@ -219,18 +313,23 @@ actor BlockingQueue: DurableDetectionQueue {
         }
     }
 
-    func deadLetter(ids: [UUID]) async throws {
+    func deadLetter(ids: [UUID], now: Date) async throws -> EnqueueResult {
+        _ = now
         let idSet = Set(ids)
         records.removeAll { idSet.contains($0.id) }
+        return .none
     }
 
-    func deadLetteredRecords() async throws -> [QueuedDetection] {
-        []
+    func deadLetteredRecords(now: Date) async throws -> DeadLetterSnapshot {
+        _ = now
+        return DeadLetterSnapshot(records: [], evictedCount: 0)
     }
 
     func clear() async throws {
         records.removeAll()
     }
+
+    func clearDeadLetters() async throws {}
 
     func waitForWriteStart() async {
         if availableStarts > 0 {
@@ -271,10 +370,11 @@ actor BlockingQueue: DurableDetectionQueue {
     }
 }
 
-final class FakeDiagnosticsReporter: DiagnosticsReporting {
-    private(set) var events: [DiagnosticEvent] = []
+@MainActor
+final class FakeDiagnosticsReporter: SelectBeaconDiagnosticsReporting {
+    private(set) var events: [SelectBeaconDiagnosticEvent] = []
 
-    func record(_ event: DiagnosticEvent, error: Error) {
+    func record(_ event: SelectBeaconDiagnosticEvent, error: Error) {
         events.append(event)
     }
 }

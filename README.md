@@ -80,6 +80,27 @@ the durable queue, and clears active presence. Operational
 `degraded` states are available through `operationalStatus` and
 `onOperationalStatusChanged`.
 
+### Optional diagnostics
+
+Use `operationalStatus` for in-app UX. Optionally install a diagnostics
+reporter to forward coarse events (queue failures, upload failures, dead-letter,
+eviction, missing device id) to the host’s own monitoring:
+
+```swift
+final class HostDiagnosticsReporter: SelectBeaconDiagnosticsReporting {
+    func record(_ event: SelectBeaconDiagnosticEvent, error: Error) {
+        // Forward `event` only — do not log tokens, secrets, or full payloads.
+        monitoring.capture(String(describing: event))
+    }
+}
+
+SelectBeaconSDK.shared.setDiagnosticsReporter(HostDiagnosticsReporter())
+// Pass nil later to clear the sink.
+```
+
+The SDK does not ship a monitoring client. Do not log secrets, tokens, request
+bodies, or beacon identities from the optional `error` parameter.
+
 ## Select app integration
 
 The standard `SelectBeaconSDK` product intentionally does not expose beacon
@@ -101,6 +122,10 @@ SelectBeaconAppSupport.shared.onPendingReportsChanged = { reports in
     // Durable FIFO awaiting upload acknowledgement (empties after successful ack).
 }
 
+SelectBeaconAppSupport.shared.onDeadLetteredReportsChanged = { reports in
+    // Non-retryable / max-attempt failures (not re-uploaded).
+}
+
 SelectBeaconAppSupport.shared.onStopFinalizePendingChanged = { pending in
     // Gate Start until false. Empty open windows after stop are not enough.
 }
@@ -109,7 +134,12 @@ let activeBeacons = SelectBeaconAppSupport.shared.currentBeacons
 let openWindows = SelectBeaconAppSupport.shared.currentOpenWindows
 let stopFinalizePending = SelectBeaconAppSupport.shared.isStopFinalizePending
 let pendingReports = try await SelectBeaconAppSupport.shared.pendingReports()
+let deadLetters = try await SelectBeaconAppSupport.shared.deadLetteredReports()
 ```
+
+`LocationFix` on open windows and pending/dead-letter reports is for Select /
+AppSupport UI (cached coarse location). VIP hosts should ignore it and stay on
+`operationalStatus` only.
 
 `currentBeacons` is presence; `currentOpenWindows` is the in-progress minute
 summary; `pendingReports()` is the durable queue. Pending items remain until
@@ -119,6 +149,9 @@ still writing; do not treat an empty open-window snapshot as enqueue completion.
 To empty the durable queue without deleting the app, stop detection, wait until
 `isStopFinalizePending == false`, then call
 `try await SelectBeaconAppSupport.shared.clearPendingReports()`.
+To empty dead letters only, call
+`try await SelectBeaconAppSupport.shared.clearDeadLetteredReports()` under the
+same gates (pending is left alone).
 For a full Select/debug UI brief, see
 [`Examples/BeaconTest/CONSUMER_UI_PROMPT.md`](Examples/BeaconTest/CONSUMER_UI_PROMPT.md).
 The adapter is a Select integration boundary, not a security boundary.
@@ -136,8 +169,8 @@ SelectBeaconSDK.configure(appKey: key, appSecret: secret)
 ```
 
 The production endpoint is internally stubbed as `REPLACE_ME_PRODUCTION` until the
-production host is confirmed. For staging, pass an explicit endpoint so separate
-staging deployments can coexist:
+production host is confirmed. For staging, pass an explicit **HTTPS** endpoint
+so separate staging deployments can coexist (cleartext `http` is rejected):
 
 ```swift
 SelectBeaconSDK.configure(
@@ -148,7 +181,7 @@ SelectBeaconSDK.configure(
 ```
 
 Staging uses the live token-broker and HTTP ingest implementations when a usable
-base URL is configured. Auth is `POST {base}/auth/v1` with `app_key` /
+HTTPS base URL is configured. Auth is `POST {base}/auth/v1` with `app_key` /
 `app_secret`; ingest sends `Authorization: Bearer {access_token}`.
 Replace the production placeholder before enabling production upload.
 Configuration cannot change after `start()`; stop and use a fresh process/session
@@ -191,11 +224,54 @@ The SDK never requests location authorization. The host app must provide its own
 the appropriate Always authorization usage description and location background
 mode (`UIBackgroundModes` / capability). Real beacon wakes depend on that host
 configuration; the SDK only implements Core Location region monitoring + ranging.
+The package includes `PrivacyInfo.xcprivacy` declaring Device ID and Precise
+Location for App Functionality (no tracking); that does not replace host
+Info.plist usage strings.
 
 - `authorizedAlways`: region monitoring stays active when backgrounded; ranging
   runs in short bursts on region enter/inside (not continuous suspended ranging).
 - `authorizedWhenInUse`: detection runs only while the app is active.
 - `notDetermined`, denied, or restricted: the SDK remains quiet.
+
+### Background and screen-off
+
+Whether detection continues after the user leaves the app (or turns the screen
+off) depends on authorization **and** host background configuration.
+
+**When In Use:** detection stops when the app is no longer active (background or
+inactive). With the screen off and the app not active, this SDK session does not
+monitor or range. Detection resumes when the app becomes active again if
+`start()` intent is still on.
+
+**Always** (intended path for background / screen-off wakes) requires **both**:
+
+1. The user grants **Always** location authorization (host prompts; SDK never
+   requests permission).
+2. The host enables **Background Modes → Location updates**
+   (`UIBackgroundModes` includes `location`). Always alone is not enough for
+   reliable wakes of a suspended app.
+
+Then:
+
+| Situation                                  | Behavior                                                                                                                                                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Foreground, screen on                      | Region monitoring and continuous ranging                                                                                                                                                                                                   |
+| App backgrounded / inactive                | Engine stays started; continuous ranging stops; region monitoring continues                                                                                                                                                                |
+| Region enter / “inside” while backgrounded | Short ranging burst for major/minor/RSSI, then observation windows and durable enqueue                                                                                                                                                     |
+| Screen off / device locked                 | Same wake/burst model — **not** continuous ranging. iOS may still deliver region enter/exit; display-on can refresh region state. Durable enqueue uses Class C Data Protection so writes can succeed after first unlock while locked later |
+| Upload while backgrounded                  | At most one batch per wake; remaining queue stays on disk                                                                                                                                                                                  |
+
+This is **region-monitor wake → brief range → store-and-forward**, not continuous
+beacon scanning with the screen off (battery and Core Location policy).
+
+**Host checklist for background / screen-off wakes:**
+
+1. Info.plist When-In-Use and Always usage strings (as required for Always).
+2. Enable Background Modes → Location updates.
+3. Obtain Always authorization in the host before relying on wakes.
+4. `configure` then `start()`; leave start intent on (do not `stop()` merely
+   because the app backgrounded).
+5. Validate on physical devices — the Simulator cannot prove iBeacon region wakes.
 
 ## Testing
 
@@ -212,4 +288,9 @@ tagging, and rollback guidance, follow [the release runbook](docs/releasing.md).
 - [Engineering constraints](docs/development-context.md)
 - [Key decisions](docs/decisions.md)
 - [Release runbook](docs/releasing.md)
+- [BeaconTest harness](Examples/BeaconTest/README.md)
 - [Beacon ingestor (backend API)](https://github.com/SelectDesign/beacon-ingestor)
+
+## License
+
+This package is released under the [MIT License](LICENSE).

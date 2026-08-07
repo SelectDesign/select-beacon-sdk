@@ -393,4 +393,125 @@ final class SelectBeaconSDKStopFinalizeTests: XCTestCase {
         let pending = try await sdk.selectPendingReports()
         XCTAssertTrue(pending.isEmpty)
     }
+
+    func testClearDeadLetteredReportsDoesNotClearPendingUnreadableDegrade() async throws {
+        let engine = FakeEngine()
+        let queue = UnreadableQueue(pendingReadable: false, deadLetterReadable: false)
+        let sdk = SDKTestFixture.makeSDK(engine: engine, queue: { _ in queue })
+        let clearedFinalize = expectation(description: "Stop finalize settled")
+        sdk.onSelectStopFinalizePendingChanged = { pending in
+            if !pending {
+                clearedFinalize.fulfill()
+            }
+        }
+
+        sdk.start()
+        engine.emit([SDKTestFixture.beacon(minor: 42)])
+        sdk.stop()
+        await fulfillment(of: [clearedFinalize], timeout: 1)
+        XCTAssertEqual(sdk.operationalStatus, .degraded(.durableQueueUnreadable))
+
+        try await sdk.selectClearDeadLetteredReports()
+
+        XCTAssertEqual(sdk.operationalStatus, .degraded(.durableQueueUnreadable))
+        let dead = try await sdk.selectDeadLetteredReports()
+        XCTAssertTrue(dead.isEmpty)
+    }
+
+    func testClearPendingReportsDoesNotClearDeadLetterUnreadableDegrade() async throws {
+        let engine = FakeEngine()
+        let queue = UnreadableQueue(pendingReadable: false, deadLetterReadable: false)
+        let sdk = SDKTestFixture.makeSDK(engine: engine, queue: { _ in queue })
+        let clearedFinalize = expectation(description: "Stop finalize settled")
+        sdk.onSelectStopFinalizePendingChanged = { pending in
+            if !pending {
+                clearedFinalize.fulfill()
+            }
+        }
+
+        sdk.start()
+        engine.emit([SDKTestFixture.beacon(minor: 42)])
+        sdk.stop()
+        await fulfillment(of: [clearedFinalize], timeout: 1)
+        XCTAssertEqual(sdk.operationalStatus, .degraded(.durableQueueUnreadable))
+
+        try await sdk.selectClearPendingReports()
+
+        XCTAssertEqual(sdk.operationalStatus, .degraded(.durableQueueUnreadable))
+        let pending = try await sdk.selectPendingReports()
+        XCTAssertTrue(pending.isEmpty)
+    }
+
+    func testClearDeadLetteredReportsRefusesWhileDetectionActive() async throws {
+        let engine = FakeEngine()
+        let queue = InMemoryQueue()
+        let sdk = SDKTestFixture.makeSDK(engine: engine, queue: { _ in queue })
+        sdk.start()
+
+        do {
+            try await sdk.selectClearDeadLetteredReports()
+            XCTFail("Expected clear to refuse while detection is active")
+        } catch let error as SelectPendingReportsClearError {
+            XCTAssertEqual(error, .detectionActive)
+        }
+    }
+
+    func testClearDeadLetteredReportsEmptiesDeadLettersWhenStopped() async throws {
+        let engine = FakeEngine()
+        let queue = InMemoryQueue()
+        let sdk = SDKTestFixture.makeSDK(engine: engine, queue: { _ in queue })
+        let emptied = expectation(description: "Dead letter snapshot emptied")
+        sdk.onSelectDeadLetteredReportsChanged = { reports in
+            if reports.isEmpty {
+                emptied.fulfill()
+            }
+        }
+
+        let detection = QueuedDetectionFixtures.make(minor: 11)
+        _ = try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
+        _ = try await queue.deadLetter(ids: [detection.id], now: Date(timeIntervalSince1970: 1_000_000))
+        XCTAssertEqual(queue.deadLetters.count, 1)
+
+        try await sdk.selectClearDeadLetteredReports()
+        await fulfillment(of: [emptied], timeout: 1)
+        XCTAssertTrue(queue.deadLetters.isEmpty)
+        let dead = try await sdk.selectDeadLetteredReports()
+        XCTAssertTrue(dead.isEmpty)
+    }
+
+    func testDeadLetterAgeEvictionOnReadNotifiesAppSupport() async throws {
+        let engine = FakeEngine()
+        let queue = InMemoryQueue()
+        queue.maxRecordAge = 60
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let aged = QueuedDetectionFixtures.make(
+            minor: 7,
+            latestTimestamp: now.addingTimeInterval(-120),
+            queuedAt: now.addingTimeInterval(-120)
+        )
+        _ = try await queue.enqueue(aged, now: aged.queuedAt)
+        _ = try await queue.deadLetter(ids: [aged.id], now: aged.queuedAt)
+        XCTAssertEqual(queue.deadLetters.count, 1)
+
+        let clock = MutableClock(now: now)
+        let sdk = SelectBeaconSDK(
+            engine: { engine },
+            permissionObserver: { FakePermissionObserver(authorization: .always) },
+            lifecycleObserver: { FakeLifecycleObserver(isActive: true) },
+            clock: clock,
+            queue: { _ in queue },
+            networkPathObserver: { FakeNetworkPathObserver() },
+            identity: AppIdentity(appKey: "customer-key", appSecret: "test-secret")
+        )
+        let evictionNotify = expectation(description: "Eviction notifies callback")
+        sdk.onSelectDeadLetteredReportsChanged = { reports in
+            XCTAssertTrue(reports.isEmpty)
+            evictionNotify.fulfill()
+        }
+
+        let reports = try await sdk.selectDeadLetteredReports()
+        XCTAssertTrue(reports.isEmpty)
+        XCTAssertTrue(queue.deadLetters.isEmpty)
+        await fulfillment(of: [evictionNotify], timeout: 1)
+    }
 }
