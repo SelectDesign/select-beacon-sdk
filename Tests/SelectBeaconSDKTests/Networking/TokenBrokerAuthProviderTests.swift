@@ -263,6 +263,32 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
         }
     }
 
+    func testUnauthorizedStatusIsTypedAndHostVisible() async throws {
+        let client = FakeHTTPDataLoader(outcomes: [
+            .httpStatus(statusCode: 401, headerFields: nil),
+        ])
+        let provider = try makeProvider(
+            client: client,
+            clock: MutableClock(now: initialDate)
+        )
+
+        do {
+            _ = try await provider.validAuthorization()
+            XCTFail("Expected unauthorized token retrieval to fail")
+        } catch let error as TokenBrokerAuthError {
+            XCTAssertEqual(error, .unauthorized(statusCode: 401))
+            XCTAssertTrue(error.isHostVisibleAuthenticationFailure)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testNetworkFailureIsNotHostVisible() {
+        XCTAssertFalse(TokenBrokerAuthError.networkRequestFailed.isHostVisibleAuthenticationFailure)
+        XCTAssertTrue(TokenBrokerAuthError.invalidEndpoint.isHostVisibleAuthenticationFailure)
+        XCTAssertTrue(TokenBrokerAuthError.invalidResponse.isHostVisibleAuthenticationFailure)
+    }
+
     func testTokenIsNeverWrittenToDetectionQueue() async throws {
         let client = FakeHTTPDataLoader(outcomes: [
             .token(value: "memory-only-token", tokenType: "Bearer", expiresIn: 300, statusCode: 200),

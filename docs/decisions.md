@@ -99,6 +99,13 @@
   `token_type` + expiry in memory, and ingest attaches `Authorization`.
   There is no auth-pause kill-switch. Unusable production placeholder keeps
   deferred upload seams (no network).
+- Host-visible token-broker failures (401/403, invalid token body, unusable
+  auth endpoint) surface as `.degraded(.authenticationFailed)` on
+  `operationalStatus` — not diagnostics-only. Upload keeps Queued + backoff
+  retries so temporary API suspension → re-enable with the **same**
+  appKey/secret self-heals on the next successful mint. Transient network /
+  5xx / 429 do not change operational status. Clears on successful mint or
+  `configure`.
 - Forward triggers (**latency-first**): when online, post-enqueue / region-wake
   opportunistic flush is the usual first drain (foreground may fully drain;
   **background wake flushes are bounded to one batch**). Quiet debounce (60s)
@@ -109,7 +116,7 @@
 - Offline means retain without an attempt or backoff. Retryable failures back off
   15s, doubling to 300s, and reset after successful acknowledgement.
   `Retry-After` (including header-less 429 → exponential) is honored for rate
-  limits on both ingest and the auth token broker. 401/403 invalidates the
+  limits on both ingest and the auth token broker. Ingest 401/403 invalidates the
   token, refreshes once, and retries immediately.
   Other 4xx dead-letter the batch; retryable failures dead-letter after
   `maxUploadAttempts`. Pending and dead-letter size/age caps apply with

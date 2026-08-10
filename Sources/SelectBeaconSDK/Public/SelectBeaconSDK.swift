@@ -316,6 +316,12 @@ public final class SelectBeaconSDK {
                 onQueueAcknowledged: { [weak self] in
                     await self?.publishPendingReportsSnapshot()
                     await self?.publishDeadLetteredReportsSnapshot()
+                },
+                onHostVisibleAuthenticationFailure: { [weak self] in
+                    self?.updateOperationalStatus(.degraded(.authenticationFailed))
+                },
+                onAuthenticationRecovered: { [weak self] in
+                    self?.clearAuthenticationFailedIfNeeded()
                 }
             )
             if let lifecycleObserver {
@@ -737,6 +743,12 @@ public final class SelectBeaconSDK {
     }
 
     // MARK: - Operational status
+
+    /// Clears auth degrade after a successful token mint (suspend→re-enable self-heal).
+    private func clearAuthenticationFailedIfNeeded() {
+        guard case .degraded(.authenticationFailed) = operationalStatus else { return }
+        updateOperationalStatusForSession()
+    }
 
     private func updateOperationalStatusForSession() {
         guard enablementConfiguration != nil else {

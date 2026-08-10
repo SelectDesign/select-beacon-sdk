@@ -24,10 +24,13 @@ Poison / max-attempt failures must leave Queued and appear under Dead letter.
 2. Call `SelectBeaconSDK.configure(appKey:appSecret:environment:)` (staging
    requires an explicit base URL; production is the default), then register
    AppSupport callbacks, then `SelectBeaconSDK.shared.start()`.
-3. On appear, also call `try await SelectBeaconAppSupport.shared.pendingReports()`
+3. Optionally observe `SelectBeaconSDK.shared.onOperationalStatusChanged` for
+   session UX, including `.degraded(.authenticationFailed)` when the token
+   broker fails (Queued is retained; upload retries; clears on successful mint).
+4. On appear, also call `try await SelectBeaconAppSupport.shared.pendingReports()`
    and `try await SelectBeaconAppSupport.shared.deadLetteredReports()` to load
    queue records from a prior launch.
-4. Optional for local demos only:  
+5. Optional for local demos only:  
    `SelectBeaconSDK.shared.selectInstallDebugAutoAckUploadSeams()`  
    (`@_spi(SelectApp)` on the SDK module) so flushes auto-acknowledge without a
    real VIP API. Without auto-ack, staging uses live `/auth/v1` + ingest

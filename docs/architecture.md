@@ -40,8 +40,10 @@ SelectBeaconSDK.shared.stop()
 - `stop` stops region monitoring and ranging, finalizes open observation
   windows into the durable queue, and clears active presence. The next `start`
   begins a fresh window session.
-- `SDKOperationalStatus` communicates configuration, permission, ranging, and
-  recoverable persistence issues without beacon or queue data.
+- `SDKOperationalStatus` communicates configuration, permission, ranging,
+  authentication, and recoverable persistence issues without beacon or queue
+  data. Token-broker host-visible failures use `.degraded(.authenticationFailed)`
+  while upload retries continue.
 - Standard consumers do not receive beacon identities, RSSI, report IDs, or
   durable queue contents.
 - `SelectBeaconAppSupport` is a separate package product for the Select app.
@@ -361,12 +363,16 @@ Failed sends classify as follows:
   doubling to `uploadRetryBackoffMax` 300s). Each failure increments a persisted
   per-record `uploadAttemptCount`. After `maxUploadAttempts` (8), the batch is
   moved to a durable dead-letter store so the FIFO head can advance.
+  Host-visible broker failures (401/403, invalid token body, invalid endpoint)
+  also set `.degraded(.authenticationFailed)` while retries continue.
 - **429 (ingest or auth token broker):** retryable; honor `Retry-After` when
   present, otherwise exponential backoff. Attempts count toward
-  `maxUploadAttempts`.
-- **401/403:** invalidate the cached token, refresh once, and retry the same
-  batch immediately. A second failure uses exponential backoff (no tight loop).
-- **Other 4xx (e.g. 400, 422):** non-retryable; dead-letter the batch immediately.
+  `maxUploadAttempts`. Does not change `operationalStatus`.
+- **Ingest 401/403:** invalidate the cached token, refresh once, and retry the
+  same batch immediately. A second failure uses exponential backoff (no tight
+  loop). If the refresh mint fails with a host-visible broker error, status
+  degrades as above.
+- **Other ingest 4xx (e.g. 400, 422):** non-retryable; dead-letter the batch immediately.
 
 Dead-lettered records are retained on disk for diagnostics (not uploaded again)
 and emit `uploadDeadLettered`. The pending and dead-letter stores are both
@@ -422,6 +428,15 @@ token type, and expiry in memory only, and reuses that authorization until it
 is within its refresh safety margin. Concurrent refreshes share one in-flight
 request. The SDK never holds or transmits an Auth0 client secret, and the
 durable detection queue never stores access tokens or the app secret.
+
+**Host-visible auth failures** (broker HTTP 401/403, invalid/empty token JSON,
+or unusable auth endpoint) set
+`operationalStatus` to `.degraded(.authenticationFailed)`. Ranging may continue;
+Queued reports are retained; upload keeps exponential/Retry-After backoff so a
+temporary API suspension self-heals on the next successful mint with the **same**
+credentials (no new identity required). Transient auth failures (network, 5xx, 429) do not change `operationalStatus`. Successful mint or `configure` clears
+the auth degrade. Optional diagnostics still receive `.uploadFailed` for
+monitoring.
 
 `HTTPIngestUploadTransport` performs the live ingest POST when the environment
 base URL is a usable HTTPS URL. Production remains deferred while

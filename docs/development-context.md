@@ -17,7 +17,9 @@ crowdsource locations of Select retail assets.
   uses an explicit caller-supplied endpoint so multiple staging environments are supported.
 - Target iOS 17+, keep `SelectBeaconSDK` main-actor isolated, and add no third-party dependencies.
 - Keep the standard public API limited to configure, shared start/stop, and
-  non-sensitive operational status.
+  non-sensitive operational status (including `.degraded(.authenticationFailed)`
+  for host-visible token-broker failures; detection may continue while upload
+  retries).
 - Keep beacon observations and durable queue data behind the Select-owned
   `SelectBeaconAppSupport` product and its SPI bridge. The adapter exposes
   active beacons separately from pending reports so the Select app does not

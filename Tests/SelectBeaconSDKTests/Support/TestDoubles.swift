@@ -373,9 +373,11 @@ actor BlockingQueue: DurableDetectionQueue {
 @MainActor
 final class FakeDiagnosticsReporter: SelectBeaconDiagnosticsReporting {
     private(set) var events: [SelectBeaconDiagnosticEvent] = []
+    private(set) var errors: [Error] = []
 
     func record(_ event: SelectBeaconDiagnosticEvent, error: Error) {
         events.append(event)
+        errors.append(error)
     }
 }
 

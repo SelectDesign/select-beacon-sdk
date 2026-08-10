@@ -58,7 +58,9 @@ limitation.
     (`UIBackgroundModes` / capability) — Always alone is not enough
   - `configure(appKey:appSecret:)` then `start()` / `stop()`; leave start
     intent on when backgrounding (do not `stop()` just for background)
-  - subscribe to `operationalStatus` only (no beacon identities)
+  - subscribe to `operationalStatus` only (no beacon identities); handle
+    `.degraded(.authenticationFailed)` for token-broker failures (Queued
+    retained; retries continue; clears on successful mint or reconfigure)
   - optional `setDiagnosticsReporter` for host monitoring
   - never import `@_spi(SelectApp)` or `SelectBeaconAppSupport` in VIP
 - [ ] Select internal app notes: additionally depend on

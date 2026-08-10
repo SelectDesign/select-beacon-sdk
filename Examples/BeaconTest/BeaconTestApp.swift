@@ -258,7 +258,12 @@ private struct BeaconTestView: View {
         case .ranging:
             return "Ranging"
         case .degraded(let issue):
-            return "Degraded (\(String(describing: issue)))"
+            switch issue {
+            case .authenticationFailed:
+                return "Authentication failed"
+            default:
+                return "Degraded (\(String(describing: issue)))"
+            }
         }
     }
 
@@ -277,6 +282,8 @@ private struct BeaconTestView: View {
             return "Start requested; waiting for ranging conditions."
         case .ready, .unconfigured:
             return "Call Start to begin detection."
+        case .degraded(.authenticationFailed):
+            return "Token broker failed; Queued retained and upload retries. Clears on successful mint."
         case .degraded:
             return "See operationalStatus for the recoverable issue."
         }

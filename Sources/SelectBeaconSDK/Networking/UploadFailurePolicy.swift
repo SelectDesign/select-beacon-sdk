@@ -30,7 +30,8 @@ enum UploadFailurePolicy: Equatable, Sendable {
             case .rateLimited(let retryAfter):
                 return .retryable(backoff: .rateLimited(retryAfter: retryAfter))
             case .invalidEndpoint, .networkRequestFailed, .invalidHTTPResponse,
-                 .unexpectedStatusCode, .invalidResponse:
+                 .unauthorized, .unexpectedStatusCode, .invalidResponse:
+                // Host-visible auth failures still retry (suspend→re-enable self-heals).
                 return .retryable(backoff: .exponential)
             }
         }

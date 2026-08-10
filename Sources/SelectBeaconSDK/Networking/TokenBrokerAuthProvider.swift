@@ -24,8 +24,23 @@ enum TokenBrokerAuthError: Error, Equatable {
     case invalidHTTPResponse
     /// Auth broker returned HTTP 429; honor `Retry-After` when present.
     case rateLimited(retryAfter: TimeInterval?)
+    /// Auth broker rejected credentials or client access (HTTP 401/403).
+    ///
+    /// May mean bad key/secret or temporary API suspension — hosts see
+    /// `.authenticationFailed` while upload keeps retrying with backoff.
+    case unauthorized(statusCode: Int)
     case unexpectedStatusCode(Int)
     case invalidResponse
+
+    /// Failures VIP should surface on `operationalStatus` (signal + retry).
+    var isHostVisibleAuthenticationFailure: Bool {
+        switch self {
+        case .unauthorized, .invalidEndpoint, .invalidResponse:
+            return true
+        case .networkRequestFailed, .invalidHTTPResponse, .rateLimited, .unexpectedStatusCode:
+            return false
+        }
+    }
 }
 
 /// Retrieves and retains one short-lived upload token for the app installation.
@@ -155,6 +170,9 @@ final class TokenBrokerAuthProvider: AuthProvider {
                 now: clock.now
             )
             throw TokenBrokerAuthError.rateLimited(retryAfter: delay)
+        }
+        if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+            throw TokenBrokerAuthError.unauthorized(statusCode: httpResponse.statusCode)
         }
         guard (200...299).contains(httpResponse.statusCode) else {
             throw TokenBrokerAuthError.unexpectedStatusCode(httpResponse.statusCode)

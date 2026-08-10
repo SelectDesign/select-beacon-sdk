@@ -63,11 +63,13 @@ Add the package to the host app, then configure it during the host's startup flo
 import SelectBeaconSDK
 
 SelectBeaconSDK.configure(
-    appKey: distributorAppKey
+    appKey: distributorAppKey,
+    appSecret: distributorAppSecret
 )
 
 SelectBeaconSDK.shared.onOperationalStatusChanged = { status in
-    // Configuration, permission, ranging, or recoverable SDK state.
+    // Configuration, permission, ranging, auth, or other recoverable SDK state.
+    // Handle `.degraded(.authenticationFailed)` for token-broker failures.
 }
 
 SelectBeaconSDK.shared.start()
@@ -80,11 +82,21 @@ the durable queue, and clears active presence. Operational
 `degraded` states are available through `operationalStatus` and
 `onOperationalStatusChanged`.
 
+**Authentication failures:** when the token broker rejects the client (HTTP
+401/403), returns an unusable token body, or the auth endpoint is invalid, status
+becomes `.degraded(.authenticationFailed)`. Detection may continue and Queued
+reports stay on disk; upload keeps retrying with normal backoff. The degrade
+clears on the next successful token mint (same appKey/secret is enough after a
+temporary API suspension) or on a successful `configure`. Transient network /
+5xx / 429 auth failures do **not** change `operationalStatus` (optional
+diagnostics only).
+
 ### Optional diagnostics
 
-Use `operationalStatus` for in-app UX. Optionally install a diagnostics
-reporter to forward coarse events (queue failures, upload failures, dead-letter,
-eviction, missing device id) to the host’s own monitoring:
+Use `operationalStatus` for in-app UX (including `.authenticationFailed`).
+Optionally install a diagnostics reporter to forward coarse events (queue
+failures, upload failures, dead-letter, eviction, missing device id) to the
+host’s own monitoring:
 
 ```swift
 final class HostDiagnosticsReporter: SelectBeaconDiagnosticsReporting {
