@@ -391,12 +391,20 @@ actor FileDetectionQueue: DurableDetectionQueue {
         records.removeAll { idSet.contains($0.id) }
         deadLetters.append(contentsOf: moving)
         let evicted = pruneDeadLetters(now: now)
+        // Persist destination first so a crash/failure after this write cannot
+        // drop the record: reload reconciles pending against dead-letter IDs.
         do {
-            try persist()
             try persistDeadLetters()
         } catch {
             records = previousRecords
             deadLetters = previousDeadLetters
+            throw error
+        }
+        do {
+            try persist()
+        } catch {
+            // Dead-letter file already committed — keep memory aligned with it.
+            // Pending may still list moved IDs on disk until reconcile-on-load.
             throw error
         }
         return EnqueueResult(evictedCount: evicted)
@@ -478,12 +486,16 @@ actor FileDetectionQueue: DurableDetectionQueue {
         try ensureProtectedStorage(for: fileURL)
         guard let data = try fileStore.data(at: fileURL) else {
             hasLoaded = true
+            try reconcilePendingAgainstDeadLetters()
             return
         }
 
         do {
             records = try JSONDecoder().decode([QueuedDetection].self, from: data)
             hasLoaded = true
+            try reconcilePendingAgainstDeadLetters()
+        } catch let error as DurableDetectionQueueError {
+            throw error
         } catch {
             throw DurableDetectionQueueError.unreadableStoredDetections
         }
@@ -502,6 +514,21 @@ actor FileDetectionQueue: DurableDetectionQueue {
         } catch {
             throw DurableDetectionQueueError.unreadableStoredDetections
         }
+    }
+
+    /// Drops pending rows already committed to the dead-letter file (crash window
+    /// after destination persist, before pending persist).
+    private func reconcilePendingAgainstDeadLetters() throws {
+        try loadDeadLettersIfNeeded()
+        let deadIDs = Set(deadLetters.map(\.id))
+        guard !deadIDs.isEmpty else { return }
+        let filtered = records.filter { !deadIDs.contains($0.id) }
+        guard filtered.count != records.count else { return }
+        records = filtered
+        // Best-effort disk repair — memory is already consistent. A still-failing
+        // pending write leaves a stale pending file that the next successful
+        // persist (or another reload) can fix.
+        try? persist()
     }
 
     private func persist() throws {

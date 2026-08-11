@@ -673,6 +673,68 @@ final class FileDetectionQueueTests: XCTestCase {
     }
 }
 
+extension FileDetectionQueueTests {
+    final class FailPendingWriteFileStore: FileStoring, @unchecked Sendable {
+        struct WriteError: Error {}
+
+        private var files: [URL: Data] = [:]
+        private let pendingURL: URL
+
+        init(pendingURL: URL) {
+            self.pendingURL = pendingURL
+        }
+
+        func data(at url: URL) throws -> Data? {
+            files[url]
+        }
+
+        func createDirectory(at url: URL) throws {}
+
+        func writeAtomically(_ data: Data, to url: URL) throws {
+            if url == pendingURL, files[url] != nil {
+                // Allow the initial enqueue persist; fail later pending updates
+                // (dead-letter move's second write).
+                throw WriteError()
+            }
+            files[url] = data
+        }
+
+        func applyDataProtection(at url: URL) throws {}
+    }
+
+    func testDeadLetterPersistsDestinationBeforePendingAndSurvivesReload() async throws {
+        let pendingURL = URL(fileURLWithPath: "/queue/pending-atomic.json")
+        let deadLetterURL = URL(fileURLWithPath: "/queue/dead-atomic.json")
+        let fileStore = FailPendingWriteFileStore(pendingURL: pendingURL)
+        let queue = FileDetectionQueue(
+            storageIdentifier: "atomic-dl",
+            fileStore: fileStore,
+            fileURL: pendingURL,
+            deadLetterURL: deadLetterURL
+        )
+        let detection = QueuedDetectionFixtures.make(minor: 44)
+        _ = try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1))
+
+        do {
+            _ = try await queue.deadLetter(ids: [detection.id], now: Date(timeIntervalSince1970: 1))
+            XCTFail("Expected pending persist to fail after dead-letter commit")
+        } catch is FailPendingWriteFileStore.WriteError {
+            // Destination committed; pending persist failed.
+        }
+
+        let reloaded = FileDetectionQueue(
+            storageIdentifier: "atomic-dl",
+            fileStore: fileStore,
+            fileURL: pendingURL,
+            deadLetterURL: deadLetterURL
+        )
+        let pending = try await reloaded.nextBatch(limit: 10)
+        XCTAssertTrue(pending.isEmpty, "Reload must drop pending IDs already dead-lettered")
+        let dead = try await reloaded.deadLetteredRecords(now: Date(timeIntervalSince1970: 1))
+        XCTAssertEqual(dead.records.map(\.minor), [44])
+    }
+}
+
 private struct LegacyQueuedDetection: Encodable {
     let id: UUID
     let uuid: UUID
