@@ -104,29 +104,30 @@ public final class SelectBeaconSDK {
     /// make a network request.
     ///
     /// The type remains `@MainActor`, but this entry point is `nonisolated` so
-    /// hosts can call it from any context; work still runs on the main actor.
+    /// hosts can call it from any context. On the main thread, enablement applies
+    /// immediately. Off the main thread, enablement is staged under a lock and
+    /// applied on the main actor without a synchronous hop (callers that
+    /// configure off-main should reach `start()` on the main actor, which drains
+    /// the stage before ranging).
     nonisolated public static func configure(
         appKey: String,
         appSecret: String,
         environment: Environment = .production
     ) {
-        let apply: @MainActor () -> Void = {
-            guard !shared.hasStarted else {
-                shared.updateOperationalStatus(.degraded(.configurationLocked))
-                return
-            }
-            guard let identity = AppIdentity(appKey: appKey, appSecret: appSecret) else {
-                shared.invalidateConfiguration()
-                shared.updateOperationalStatus(.degraded(.invalidConfiguration))
-                return
-            }
-            shared.configure(identity: identity, environment: environment)
-        }
-        if Thread.isMainThread {
-            MainActor.assumeIsolated(apply)
+        let staged: StagedEnablementBox.Kind
+        if let identity = AppIdentity(appKey: appKey, appSecret: appSecret) {
+            staged = .valid(identity: identity, environment: environment)
         } else {
-            DispatchQueue.main.sync {
-                MainActor.assumeIsolated(apply)
+            staged = .invalid
+        }
+        stagedEnablement.store(staged)
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                shared.applyStagedEnablementIfNeeded()
+            }
+        } else {
+            Task { @MainActor in
+                shared.applyStagedEnablementIfNeeded()
             }
         }
     }
@@ -140,6 +141,10 @@ public final class SelectBeaconSDK {
     /// invalidates in-flight notifications and schedules stop-finalize under the
     /// new session; bumping again on `start()` would drop those reports.
     public func start() {
+        // Off-main `configure` stages onto the process-wide box for `shared` only.
+        if self === SelectBeaconSDK.shared {
+            applyStagedEnablementIfNeeded()
+        }
         guard enablementConfiguration != nil else {
             updateOperationalStatus(.degraded(.startRequestedBeforeConfiguration))
             return
@@ -248,6 +253,21 @@ public final class SelectBeaconSDK {
         enablementConfiguration = configuration
         session.configure()
         updateOperationalStatus(.ready)
+    }
+
+    private func applyStagedEnablementIfNeeded() {
+        guard let staged = stagedEnablement.take() else { return }
+        guard !hasStarted else {
+            updateOperationalStatus(.degraded(.configurationLocked))
+            return
+        }
+        switch staged {
+        case .invalid:
+            invalidateConfiguration()
+            updateOperationalStatus(.degraded(.invalidConfiguration))
+        case .valid(let identity, let environment):
+            configure(identity: identity, environment: environment)
+        }
     }
 
     private func invalidateConfiguration() {
@@ -545,18 +565,12 @@ public final class SelectBeaconSDK {
     /// Empties the durable pending queue and publishes an empty AppSupport snapshot.
     ///
     /// Refuses while detection intent is on or a stop-finalize enqueue is still
-    /// settling, so clear cannot race an in-flight durable write from stop.
+    /// settling. Also waits for any already-scheduled durable delivery (including
+    /// ordinary absence / window-close enqueues) and for in-flight upload flush
+    /// work to finish so clear cannot race a late enqueue or dead-letter.
     @_spi(SelectApp)
     public func selectClearPendingReports() async throws {
-        guard enablementConfiguration != nil else {
-            throw SelectPendingReportsClearError.notConfigured
-        }
-        guard !session.wantsRanging else {
-            throw SelectPendingReportsClearError.detectionActive
-        }
-        guard !selectIsStopFinalizePending else {
-            throw SelectPendingReportsClearError.stopFinalizePending
-        }
+        try await prepareForQueueClear()
 
         guard let queue = resolvedQueue() else {
             throw SelectPendingReportsClearError.notConfigured
@@ -575,6 +589,19 @@ public final class SelectBeaconSDK {
     /// Same gates as `selectClearPendingReports()`. Does not clear pending.
     @_spi(SelectApp)
     public func selectClearDeadLetteredReports() async throws {
+        try await prepareForQueueClear()
+
+        guard let queue = resolvedQueue() else {
+            throw SelectPendingReportsClearError.notConfigured
+        }
+        try await queue.clearDeadLetters()
+        await publishDeadLetteredReportsSnapshot()
+        await recoverDurableQueueUnreadableIfBothStoresReadable()
+    }
+
+    /// Shared clear gates: detection stopped, stop-finalize not pending, delivery
+    /// and upload flush idle.
+    private func prepareForQueueClear() async throws {
         guard enablementConfiguration != nil else {
             throw SelectPendingReportsClearError.notConfigured
         }
@@ -585,12 +612,20 @@ public final class SelectBeaconSDK {
             throw SelectPendingReportsClearError.stopFinalizePending
         }
 
-        guard let queue = resolvedQueue() else {
-            throw SelectPendingReportsClearError.notConfigured
+        // Ordinary window-close / absence enqueues do not arm stop-finalize
+        // pending; wait for the serial delivery chain so clear cannot finish
+        // before a pre-stop delivery appends.
+        await deliveryTask?.value
+
+        guard !session.wantsRanging else {
+            throw SelectPendingReportsClearError.detectionActive
         }
-        try await queue.clearDeadLetters()
-        await publishDeadLetteredReportsSnapshot()
-        await recoverDurableQueueUnreadableIfBothStoresReadable()
+        guard !selectIsStopFinalizePending else {
+            throw SelectPendingReportsClearError.stopFinalizePending
+        }
+
+        uploadCoordinator?.stop()
+        await uploadCoordinator?.waitForFlushToFinish()
     }
 
     private func notifyActiveBeaconsChanged() {
@@ -846,5 +881,33 @@ public final class SelectBeaconSDK {
 
     var configuredEndpoint: APIEndpoint? {
         enablementConfiguration?.endpoint
+    }
+}
+
+/// Lock-backed staging for `nonisolated` `configure` without `DispatchQueue.main.sync`.
+/// Kept outside `@MainActor` `SelectBeaconSDK` so off-main configure can store safely.
+private let stagedEnablement = StagedEnablementBox()
+
+private final class StagedEnablementBox: @unchecked Sendable {
+    enum Kind: Sendable {
+        case valid(identity: AppIdentity, environment: SelectBeaconSDK.Environment)
+        case invalid
+    }
+
+    private let lock = NSLock()
+    private var value: Kind?
+
+    func store(_ kind: Kind) {
+        lock.lock()
+        value = kind
+        lock.unlock()
+    }
+
+    func take() -> Kind? {
+        lock.lock()
+        defer { lock.unlock() }
+        let current = value
+        value = nil
+        return current
     }
 }

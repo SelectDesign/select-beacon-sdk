@@ -226,4 +226,31 @@ final class SelectBeaconSDKConfigurationTests: XCTestCase {
         XCTAssertEqual(fixture.engine.stopCount, 1)
         XCTAssertEqual(fixture.sdk.operationalStatus, .ready)
     }
+
+    func testConfigureFromBackgroundThreadDoesNotDeadlockWhenMainWaits() {
+        let finished = expectation(description: "configure returned on worker")
+        let worker = DispatchQueue(label: "selectbeacon.configure.worker")
+        let semaphore = DispatchSemaphore(value: 0)
+
+        worker.async {
+            // If configure used DispatchQueue.main.sync, this deadlocks because
+            // the main actor (this test) is blocked on semaphore.wait below.
+            SelectBeaconSDK.configure(
+                appKey: "bg-key",
+                appSecret: "bg-secret",
+                environment: .staging(baseURL: SDKTestFixture.testURL("https://staging.example.com"))
+            )
+            semaphore.signal()
+            finished.fulfill()
+        }
+
+        let waitResult = semaphore.wait(timeout: .now() + 2)
+        XCTAssertEqual(waitResult, .success, "configure must not main.sync while main waits on the caller")
+        wait(for: [finished], timeout: 0.5)
+
+        // Drain (and discard) any staged enablement so later fixtures' start()
+        // paths are unaffected if they share process state.
+        SelectBeaconSDK.shared.start()
+        SelectBeaconSDK.shared.stop()
+    }
 }
