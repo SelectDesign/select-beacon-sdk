@@ -1,0 +1,135 @@
+# Architecture decisions
+
+## Detection and identity
+
+- Use Core Location iBeacon **region monitoring** (wake) plus **ranging**
+  (major/minor/RSSI). No raw Bluetooth / CoreBluetooth scanning.
+- Ship one fleet UUID: `76F87C5C-AB0C-45C5-8E9A-19DEF7DC2911`.
+  Collection-shaped internal storage leaves room for future fleet expansion
+  (soft-capped so the SDK does not exhaust the app-wide 20-region budget shared
+  with the host).
+- Background beacon wakes require host location background capability
+  (`UIBackgroundModes`); the SDK implements monitoring/ranging only.
+- Major identifies the program (Pernod = 1); Minor identifies the unit.
+- The backend resolves serials. The SDK reports UUID, Major, and Minor only.
+
+## Public API and enablement
+
+- Standard consumers receive `SelectBeaconSDK.configure(appKey:appSecret:)`,
+  `shared.start()`, `shared.stop()`, and non-sensitive `operationalStatus`.
+  Both credentials are required; `environment` defaults to production.
+- `SelectBeaconAppSupport` is a separate Select-owned product exposing active,
+  open-window, pending-report, and dead-lettered-report snapshots through a
+  core SPI bridge. The SPI is an organizational boundary, not security
+  enforcement. Active beacons are ordered by UUID → major → minor. Dead letters
+  use the same report model as pending but stay in a separate list and are not
+  re-uploaded; `clearPendingReports()` does not clear them.
+  Dead-letter retention mirrors pending (`maxQueueSize` / `maxRecordAge`);
+  Select can call `clearDeadLetteredReports()` with the same stop gates as
+  pending clear.
+- The host supplies an app key and app secret before detection can start.
+  Configuration stores them in memory only; configure never starts ranging,
+  reads disk, or uses the network.
+- Production is the default (`REPLACE_ME_PRODUCTION` until its host is
+  confirmed). Staging requires a caller-supplied **HTTPS** URL (cleartext
+  `http` is rejected). Environment cannot change after `start()`.
+
+## Permission, lifecycle, and concurrency
+
+- Observe host-owned location authorization; never request permission.
+  Auth observation shares the detection engine's `CLLocationManager`; a second
+  manager is used only for the coarse location cache (two-manager design).
+  The SDK ships `PrivacyInfo.xcprivacy` declaring Device ID (IDFV) and Precise
+  Location for App Functionality with tracking disabled; Required Reason APIs
+  are not used. Host Info.plist usage strings remain host-owned.
+- Hosts may install `SelectBeaconDiagnosticsReporting` via
+  `setDiagnosticsReporter` to forward coarse events to their own monitoring.
+  The SDK stays dependency-free and never logs secrets or full payloads.
+- Always authorization keeps the engine started when backgrounded: region
+  monitoring can wake the app (host location background mode required); ranging
+  runs on enter/inside bursts, not continuous background ranging. Screen off /
+  lock uses that same wake/burst model — continuous suspended ranging is a
+  non-goal. When-In-Use detects only while the app is active.
+- `SelectBeaconSDK` and Apple-system adapters are main-actor isolated.
+- The package includes BeaconTest harness source for physical-device testing.
+
+## Observation windows and location
+
+- Aggregate sightings into 60-second windows using `bestRSSI`, latest non-nil
+  cached location, `latestTimestamp`, and `observationCount`.
+- Close on window expiry or 30-second absence and enqueue immediately.
+  `stop()` finalizes all open windows.
+- Use a low-power cached location provider: coarse updates while ranging and an
+  optional significant-change baseline under Always authorization.
+- Never request one-shot GPS per sighting. Unavailable authorization clears the
+  cached fix to `nil`.
+
+## Durable queue and delivery sessions
+
+- File-backed storage is actor-isolated and asynchronous; disk I/O does not run
+  on the SDK main actor.
+- A serial delivery chain preserves queue order. Already-finalized reports
+  finish durable persistence even if a later stop invalidates their callbacks.
+- Only `stop()` advances `deliverySession`; `start()` does not. Session tokens
+  suppress stale adapter notifications after asynchronous writes.
+- Hosts gate Start on `SelectBeaconAppSupport.isStopFinalizePending`, not on an
+  empty open-window snapshot. Repeated stop calls do not clear the flag before
+  the full durable finalize batch settles.
+- `clearPendingReports()` is available only while detection is stopped and
+  stop-finalize has settled. Clearing intentionally overwrites corrupt payloads.
+  `clearDeadLetteredReports()` uses the same gates and empties dead letters
+  only; the two clears stay independent.
+- Never overwrite unreadable pending detections during normal load/enqueue.
+  Surface a typed queue-load error until storage is cleared.
+- Pending and dead-letter files (and their Application Support directory) use
+  Data Protection `completeUntilFirstUserAuthentication`, not `.complete`, so
+  background wakes can write while locked after first unlock. Tokens/secrets
+  stay memory-only and are never written to these stores.
+
+## Upload and authentication
+
+- Transmission is **store-and-forward**: finalize → durable local queue
+  immediately; drain to the API in batches on the earliest connectivity-gated
+  opportunity. Never per-event HTTP; never block capture on the network. Chosen
+  for battery-friendly batching, offline retention, background resilience, and
+  at-least-once eventual delivery in a crowdsourced / delay-tolerant setting
+  (see `architecture.md` §5b).
+- Live usable hosts always authenticate: `TokenBrokerAuthProvider` posts
+  `app_key` / `app_secret` to `/auth/v1`, caches `access_token` +
+  `token_type` + expiry in memory, and ingest attaches `Authorization`.
+  There is no auth-pause kill-switch. Unusable production placeholder keeps
+  deferred upload seams (no network).
+- Host-visible token-broker failures (401/403, invalid token body, unusable
+  auth endpoint) surface as `.degraded(.authenticationFailed)` on
+  `operationalStatus` — not diagnostics-only. Upload keeps Queued + backoff
+  retries so temporary API suspension → re-enable with the **same**
+  appKey/secret self-heals on the next successful mint. Transient network /
+  5xx / 429 do not change operational status. Clears on successful mint or
+  `configure`.
+- Forward triggers (**latency-first**): when online, post-enqueue / region-wake
+  opportunistic flush is the usual first drain (foreground may fully drain;
+  **background wake flushes are bounded to one batch**). Quiet debounce (60s)
+  is a foreground coalescing backstop, not the primary drain path. Also:
+  maximum queue age (300s), app background/foreground, connectivity return,
+  and cold-start backlog flush. Remaining records stay durable until a later
+  full-drain trigger.
+- Offline means retain without an attempt or backoff. Retryable failures back off
+  15s, doubling to 300s, and reset after successful acknowledgement.
+  `Retry-After` (including header-less 429 → exponential) is honored for rate
+  limits on both ingest and the auth token broker. Ingest 401/403 invalidates the
+  token, refreshes once, and retries immediately.
+  Other 4xx dead-letter the batch; retryable failures dead-letter after
+  `maxUploadAttempts`. Pending and dead-letter size/age caps apply with
+  eviction diagnostics.
+- Auth is `POST {base}/auth/v1` with `app_key` and `app_secret`; responses use
+  `access_token`, `token_type`, and `expires_in`.
+- Ingest is `POST {base}/sdk/v1/detections` with body
+  `{ "detections": [ { "uuid": …, "best_rssi_dbm": …, … } ] }`,
+  snake_case fields (including stable `idempotency_key`), and
+  `Authorization: {token_type} {access_token}`. HTTP 200 acknowledges the posted
+  batch. Backend must dedupe on `idempotency_key` for at-least-once re-sends.
+- The SDK obtains short-lived tokens using `appKey` and `appSecret` only. It
+  never holds or transmits an Auth0 client secret. The app secret is never
+  logged or written to the durable queue.
+- The production host remains `REPLACE_ME_PRODUCTION` until replaced; explicit
+  usable HTTPS staging URLs use the live auth and HTTP implementations.
