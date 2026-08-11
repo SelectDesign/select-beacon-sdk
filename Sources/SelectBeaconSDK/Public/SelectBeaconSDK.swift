@@ -794,7 +794,8 @@ public final class SelectBeaconSDK {
     /// Clears auth degrade after a successful token mint (suspend→re-enable self-heal).
     private func clearAuthenticationFailedIfNeeded() {
         guard case .degraded(.authenticationFailed) = operationalStatus else { return }
-        updateOperationalStatusForSession()
+        // Bypass sticky guard — successful mint is an explicit clear path.
+        applySessionOperationalStatus()
     }
 
     private func updateOperationalStatusForSession() {
@@ -802,6 +803,10 @@ public final class SelectBeaconSDK {
         if case .degraded(.authenticationFailed) = operationalStatus {
             return
         }
+        applySessionOperationalStatus()
+    }
+
+    private func applySessionOperationalStatus() {
         guard enablementConfiguration != nil else {
             updateOperationalStatus(.unconfigured)
             return
