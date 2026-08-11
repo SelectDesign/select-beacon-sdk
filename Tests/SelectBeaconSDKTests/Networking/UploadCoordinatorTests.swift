@@ -834,4 +834,77 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertTrue(transport.uploads.isEmpty)
         XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
     }
+
+    func testBrokerAuthFailureDoesNotConsumeUploadAttemptsOrDeadLetter() async {
+        let configuration = SDKConfiguration.default.with(maxUploadAttempts: 2)
+        let queue = InMemoryQueue(records: [makeDetection(minor: 30)])
+        let auth = FakeAuthProvider()
+        auth.error = TokenBrokerAuthError.invalidResponse
+        let retry = ManualDelayedActionScheduler()
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            auth: auth,
+            retry: retry,
+            configuration: configuration
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+        XCTAssertEqual(queue.records.first?.uploadAttemptCount, 0)
+
+        retry.fire()
+        await waitForSchedules(1, scheduler: retry)
+        retry.fire()
+        await waitForSchedules(1, scheduler: retry)
+
+        XCTAssertEqual(queue.records.first?.uploadAttemptCount, 0)
+        XCTAssertEqual(queue.records.map(\.minor), [30])
+        XCTAssertTrue(queue.deadLetters.isEmpty)
+    }
+
+    func testStopPreventsInFlightClientErrorFromDeadLettering() async {
+        final class GateTransport: UploadTransport {
+            var continuation: CheckedContinuation<Void, Never>?
+            func upload(
+                detections: [QueuedDetection],
+                authorization: UploadAuthorization
+            ) async throws -> UploadResponse {
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    continuation = cont
+                }
+                throw HTTPIngestUploadError.clientError(statusCode: 422)
+            }
+        }
+
+        let detection = makeDetection(minor: 31)
+        let queue = InMemoryQueue(records: [detection])
+        let gateTransport = GateTransport()
+        let path = FakeNetworkPathObserver()
+        let clock = MutableClock(now: Date(timeIntervalSince1970: 1_000_000))
+        let coordinator = UploadCoordinator(
+            configuration: .default,
+            queueProvider: { queue },
+            authProvider: FakeAuthProvider(),
+            transport: gateTransport,
+            pathObserver: path,
+            quietDebounceScheduler: ManualDelayedActionScheduler(),
+            maxAgeScheduler: ManualDelayedActionScheduler(),
+            retryBackoffScheduler: ManualDelayedActionScheduler(),
+            clock: clock,
+            deviceIdentifier: FakeDeviceIdentifier()
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitUntil("upload gated") { gateTransport.continuation != nil }
+
+        coordinator.stop()
+        gateTransport.continuation?.resume()
+        gateTransport.continuation = nil
+        await coordinator.waitForFlushToFinish()
+
+        XCTAssertTrue(queue.deadLetters.isEmpty)
+        XCTAssertEqual(queue.records.map(\.minor), [31])
+    }
 }

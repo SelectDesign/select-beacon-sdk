@@ -24,6 +24,9 @@ final class UploadCoordinator {
     private var isForeground = true
     private var isFlushing = false
     private var flushAgain = false
+    /// Bumped in `stop()` so an in-flight flush cannot mutate the queue after stop/clear.
+    private var flushGeneration = 0
+    private var flushIdleWaiters: [CheckedContinuation<Void, Never>] = []
     private var currentBackoff: TimeInterval
     /// When set, flushes wait until this instant (e.g. API `Retry-After`).
     private var uploadPausedUntil: Date?
@@ -79,6 +82,7 @@ final class UploadCoordinator {
 
     func stop() {
         wantsRunning = false
+        flushGeneration &+= 1
         uploadPausedUntil = nil
         flushAgain = false
         quietDebounceScheduler.cancel()
@@ -86,6 +90,14 @@ final class UploadCoordinator {
         retryBackoffScheduler.cancel()
         pathObserver.stop()
         pathObserver.onPathChanged = nil
+    }
+
+    /// Suspends until any in-flight `flushIfPossible` finishes (including after `stop()`).
+    func waitForFlushToFinish() async {
+        guard isFlushing else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            flushIdleWaiters.append(continuation)
+        }
     }
 
     func setForeground(_ isForeground: Bool) {
@@ -216,9 +228,15 @@ final class UploadCoordinator {
         guard pathObserver.isSatisfied else { return }
         guard let queue = queueProvider() else { return }
 
+        let generation = flushGeneration
         isFlushing = true
         defer {
             isFlushing = false
+            let waiters = flushIdleWaiters
+            flushIdleWaiters = []
+            for waiter in waiters {
+                waiter.resume()
+            }
             if flushAgain, wantsRunning {
                 flushAgain = false
                 Task { @MainActor [weak self] in
@@ -232,7 +250,7 @@ final class UploadCoordinator {
 
         var batchesAttempted = 0
         do {
-            while wantsRunning, pathObserver.isSatisfied {
+            while wantsRunning, flushGeneration == generation, pathObserver.isSatisfied {
                 if let maxBatches, batchesAttempted >= maxBatches {
                     return
                 }
@@ -241,6 +259,7 @@ final class UploadCoordinator {
                 }
 
                 let batch = try await queue.nextBatch(limit: configuration.uploadBatchLimit)
+                guard wantsRunning, flushGeneration == generation else { return }
                 guard !batch.isEmpty else {
                     currentBackoff = configuration.uploadRetryBackoff
                     maxAgeScheduler.cancel()
@@ -256,12 +275,17 @@ final class UploadCoordinator {
                         .deviceIdentifierUnavailable,
                         error: BeaconUploadPayloadEncoder.MissingDeviceIdentifier()
                     )
-                    _ = await handleRetryableFailure(queue: queue, batch: batch)
+                    _ = await handleRetryableFailure(
+                        queue: queue,
+                        batch: batch,
+                        consumesUploadAttempt: true
+                    )
                     return
                 }
 
                 do {
                     let response = try await performUpload(batch: batch)
+                    guard wantsRunning, flushGeneration == generation else { return }
                     switch response {
                     case .accepted(let ids):
                         let batchIDs = Set(batch.map(\.id))
@@ -275,6 +299,7 @@ final class UploadCoordinator {
                         await refreshMaxAgeSchedule()
                     }
                 } catch {
+                    guard wantsRunning, flushGeneration == generation else { return }
                     let shouldStop = await handleUploadError(error, queue: queue, batch: batch)
                     if shouldStop {
                         return
@@ -309,15 +334,25 @@ final class UploadCoordinator {
         queue: any DurableDetectionQueue,
         batch: [QueuedDetection]
     ) async -> Bool {
+        guard wantsRunning else { return true }
         diagnosticsReporter.record(.uploadFailed, error: error)
         switch UploadFailurePolicy.policy(for: error) {
         case .deadLetterImmediately:
             await deadLetter(batch: batch, queue: queue)
             return false
         case .unauthorizedRefresh:
-            return await handleRetryableFailure(queue: queue, batch: batch)
-        case .retryable(let backoff):
-            return await handleRetryableFailure(queue: queue, batch: batch, backoff: backoff)
+            return await handleRetryableFailure(
+                queue: queue,
+                batch: batch,
+                consumesUploadAttempt: true
+            )
+        case .retryable(let backoff, let consumesUploadAttempt):
+            return await handleRetryableFailure(
+                queue: queue,
+                batch: batch,
+                backoff: backoff,
+                consumesUploadAttempt: consumesUploadAttempt
+            )
         }
     }
 
@@ -325,20 +360,25 @@ final class UploadCoordinator {
     private func handleRetryableFailure(
         queue: any DurableDetectionQueue,
         batch: [QueuedDetection],
-        backoff: UploadFailurePolicy.RetryBackoffKind = .exponential
+        backoff: UploadFailurePolicy.RetryBackoffKind = .exponential,
+        consumesUploadAttempt: Bool
     ) async -> Bool {
-        do {
-            try await queue.recordUploadAttempts(for: batch.map(\.id))
-            let refreshed = try await queue.nextBatch(limit: batch.count)
-            let maxAttempts = configuration.maxUploadAttempts
-            if refreshed.contains(where: { $0.uploadAttemptCount >= maxAttempts }) {
-                await deadLetter(batch: refreshed, queue: queue)
-                return false
+        guard wantsRunning else { return true }
+        if consumesUploadAttempt {
+            do {
+                try await queue.recordUploadAttempts(for: batch.map(\.id))
+                let refreshed = try await queue.nextBatch(limit: batch.count)
+                let maxAttempts = configuration.maxUploadAttempts
+                if refreshed.contains(where: { $0.uploadAttemptCount >= maxAttempts }) {
+                    await deadLetter(batch: refreshed, queue: queue)
+                    return false
+                }
+            } catch {
+                diagnosticsReporter.record(.durableQueueWriteFailed, error: error)
             }
-        } catch {
-            diagnosticsReporter.record(.durableQueueWriteFailed, error: error)
         }
 
+        guard wantsRunning else { return true }
         switch backoff {
         case .exponential:
             scheduleRetryBackoff()
@@ -353,6 +393,7 @@ final class UploadCoordinator {
     }
 
     private func deadLetter(batch: [QueuedDetection], queue: any DurableDetectionQueue) async {
+        guard wantsRunning else { return }
         do {
             let result = try await queue.deadLetter(ids: batch.map(\.id), now: clock.now)
             diagnosticsReporter.record(.uploadDeadLettered)

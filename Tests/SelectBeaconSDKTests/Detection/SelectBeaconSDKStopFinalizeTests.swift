@@ -514,4 +514,39 @@ final class SelectBeaconSDKStopFinalizeTests: XCTestCase {
         XCTAssertTrue(queue.deadLetters.isEmpty)
         await fulfillment(of: [evictionNotify], timeout: 1)
     }
+
+    func testClearPendingWaitsForInFlightAbsenceEnqueue() async throws {
+        let engine = FakeEngine()
+        let queue = BlockingQueue()
+        let clock = MutableClock()
+        let absenceScheduler = ManualDelayedActionScheduler()
+        let sdk = SDKTestFixture.makeSDK(
+            engine: engine,
+            queue: { _ in queue },
+            clock: clock,
+            absenceScheduler: absenceScheduler
+        )
+
+        sdk.start()
+        engine.emit([SDKTestFixture.beacon(minor: 55)])
+        SDKTestFixture.closeOpenWindows(clock: clock, absenceScheduler: absenceScheduler)
+        await queue.waitForWriteStart()
+        XCTAssertFalse(sdk.selectIsStopFinalizePending)
+
+        sdk.stop()
+        XCTAssertFalse(sdk.selectIsStopFinalizePending)
+
+        let clearTask = Task { @MainActor in
+            try await sdk.selectClearPendingReports()
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(clearTask.isCancelled)
+
+        await queue.releaseNextWrite()
+        await queue.waitForWriteCompletion()
+        try await clearTask.value
+
+        let pending = try await queue.pendingRecords()
+        XCTAssertTrue(pending.isEmpty)
+    }
 }

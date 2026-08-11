@@ -76,15 +76,25 @@
   empty open-window snapshot. Repeated stop calls do not clear the flag before
   the full durable finalize batch settles.
 - `clearPendingReports()` is available only while detection is stopped and
-  stop-finalize has settled. Clearing intentionally overwrites corrupt payloads.
+  stop-finalize has settled. Clear also waits for any already-scheduled durable
+  delivery (ordinary absence / window-close enqueues) and for in-flight upload
+  flush work to finish, so a late enqueue or dead-letter cannot repopulate after
+  success. Clearing intentionally overwrites corrupt payloads.
   `clearDeadLetteredReports()` uses the same gates and empties dead letters
   only; the two clears stay independent.
 - Never overwrite unreadable pending detections during normal load/enqueue.
   Surface a typed queue-load error until storage is cleared.
+- Pending→dead-letter moves persist the dead-letter file first, then pending.
+  Reload drops any pending IDs already present in dead letters so a crash
+  between the two writes cannot lose a record.
 - Pending and dead-letter files (and their Application Support directory) use
   Data Protection `completeUntilFirstUserAuthentication`, not `.complete`, so
   background wakes can write while locked after first unlock. Tokens/secrets
   stay memory-only and are never written to these stores.
+- `configure` is safe from any thread without synchronously hopping to the main
+  queue (avoids deadlock if main is waiting on the caller's worker). Off-main
+  calls stage enablement under a lock; `start()` drains that stage on the main
+  actor before ranging.
 
 ## Upload and authentication
 
@@ -99,13 +109,12 @@
   `token_type` + expiry in memory, and ingest attaches `Authorization`.
   There is no auth-pause kill-switch. Unusable production placeholder keeps
   deferred upload seams (no network).
-- Host-visible token-broker failures (401/403, invalid token body, unusable
-  auth endpoint) surface as `.degraded(.authenticationFailed)` on
-  `operationalStatus` — not diagnostics-only. Upload keeps Queued + backoff
-  retries so temporary API suspension → re-enable with the **same**
-  appKey/secret self-heals on the next successful mint. Transient network /
-  5xx / 429 do not change operational status. Clears on successful mint or
-  `configure`.
+- Token-broker failures keep Queued + backoff retries so temporary API
+  suspension → re-enable with the **same** appKey/secret can self-heal on the
+  next successful mint. Broker auth failures do **not** increment per-record
+  `uploadAttemptCount` (and therefore do not dead-letter after
+  `maxUploadAttempts`); ingest/network retryable failures still do. Transient
+  network / 5xx / 429 do not change operational status.
 - Forward triggers (**latency-first**): when online, post-enqueue / region-wake
   opportunistic flush is the usual first drain (foreground may fully drain;
   **background wake flushes are bounded to one batch**). Quiet debounce (60s)
@@ -118,8 +127,8 @@
   `Retry-After` (including header-less 429 → exponential) is honored for rate
   limits on both ingest and the auth token broker. Ingest 401/403 invalidates the
   token, refreshes once, and retries immediately.
-  Other 4xx dead-letter the batch; retryable failures dead-letter after
-  `maxUploadAttempts`. Pending and dead-letter size/age caps apply with
+  Other 4xx dead-letter the batch; ingest/network retryable failures dead-letter
+  after `maxUploadAttempts`. Pending and dead-letter size/age caps apply with
   eviction diagnostics.
 - Auth is `POST {base}/auth/v1` with `app_key` and `app_secret`; responses use
   `access_token`, `token_type`, and `expires_in`.
