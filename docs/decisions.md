@@ -109,12 +109,15 @@
   `token_type` + expiry in memory, and ingest attaches `Authorization`.
   There is no auth-pause kill-switch. Unusable production placeholder keeps
   deferred upload seams (no network).
-- Token-broker failures keep Queued + backoff retries so temporary API
-  suspension → re-enable with the **same** appKey/secret can self-heal on the
-  next successful mint. Broker auth failures do **not** increment per-record
-  `uploadAttemptCount` (and therefore do not dead-letter after
-  `maxUploadAttempts`); ingest/network retryable failures still do. Transient
-  network / 5xx / 429 do not change operational status.
+- Host-visible token-broker failures (401/403, invalid token body, unusable
+  auth endpoint) surface as `.degraded(.authenticationFailed)` on
+  `operationalStatus` — not diagnostics-only. Upload keeps Queued + backoff
+  retries so temporary API suspension → re-enable with the **same**
+  appKey/secret self-heals on the next successful mint. Broker auth failures
+  do **not** increment per-record `uploadAttemptCount` (and therefore do not
+  dead-letter after `maxUploadAttempts`); ingest/network retryable failures
+  still do. Transient network / 5xx / 429 do not change operational status.
+  Clears on successful mint or `configure`.
 - Forward triggers (**latency-first**): when online, post-enqueue / region-wake
   opportunistic flush is the usual first drain (foreground may fully drain;
   **background wake flushes are bounded to one batch**). Quiet debounce (60s)

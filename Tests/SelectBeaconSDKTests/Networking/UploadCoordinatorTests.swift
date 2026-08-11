@@ -953,7 +953,7 @@ final class UploadCoordinatorTests: XCTestCase {
         let configuration = SDKConfiguration.default.with(maxUploadAttempts: 2)
         let queue = InMemoryQueue(records: [makeDetection(minor: 30)])
         let auth = FakeAuthProvider()
-        auth.error = TokenBrokerAuthError.invalidResponse
+        auth.error = TokenBrokerAuthError.unauthorized(statusCode: 403)
         let retry = ManualDelayedActionScheduler()
         let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
             queue: queue,
