@@ -1,5 +1,6 @@
 import XCTest
 @testable import SelectBeaconSDK
+@testable import SelectBeaconSDKTestSupport
 
 @MainActor
 final class SelectBeaconDiagnosticsReporterTests: XCTestCase {
