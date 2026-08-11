@@ -56,7 +56,7 @@ jobs:
           # Prefer any available iPhone; avoid hardcoding name/OS (runner images churn).
           UDID="$(
             xcrun simctl list devices available \
-              | sed -n 's/.*iPhone[^(]*(\([A-F0-9-]\{36\}\)).*/\1/p' \
+              | sed -n 's/.*iPhone[^(]*(\([A-Fa-f0-9-]\{36\}\)).*/\1/p' \
               | head -n 1
           )"
           if [[ -z "${UDID}" ]]; then
