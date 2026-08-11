@@ -12,6 +12,10 @@ let package = Package(
             name: "SelectBeaconSDK",
             targets: ["SelectBeaconSDK"]
         ),
+        .library(
+            name: "SelectBeaconAppSupport",
+            targets: ["SelectBeaconAppSupport"]
+        ),
     ],
     targets: [
         .target(
@@ -20,9 +24,17 @@ let package = Package(
                 .copy("PrivacyInfo.xcprivacy")
             ]
         ),
+        .target(
+            name: "SelectBeaconAppSupport",
+            dependencies: ["SelectBeaconSDK"]
+        ),
         .testTarget(
             name: "SelectBeaconSDKTests",
             dependencies: ["SelectBeaconSDK"]
+        ),
+        .testTarget(
+            name: "SelectBeaconAppSupportTests",
+            dependencies: ["SelectBeaconAppSupport", "SelectBeaconSDK"]
         ),
     ],
     swiftLanguageModes: [.v6]
