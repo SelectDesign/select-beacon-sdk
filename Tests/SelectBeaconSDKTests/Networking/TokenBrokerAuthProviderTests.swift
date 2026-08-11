@@ -57,7 +57,7 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
                 if ignoreCancellationDuringDelay {
                     let ns = delayNanoseconds
                     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                        DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int64(ns))) {
+                        DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(ns))) {
                             cont.resume()
                         }
                     }
