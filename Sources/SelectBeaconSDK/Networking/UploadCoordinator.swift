@@ -19,6 +19,8 @@ final class UploadCoordinator {
     private let diagnosticsReporter: DiagnosticsReporting
     private let deviceIdentifier: DeviceIdentifying
     private let onQueueAcknowledged: (@MainActor () async -> Void)?
+    private let onHostVisibleAuthenticationFailure: (@MainActor () -> Void)?
+    private let onAuthenticationRecovered: (@MainActor () -> Void)?
 
     private var wantsRunning = false
     private var isForeground = true
@@ -46,7 +48,9 @@ final class UploadCoordinator {
         clock: Clock,
         diagnosticsReporter: DiagnosticsReporting = NoopDiagnosticsReporter(),
         deviceIdentifier: DeviceIdentifying = VendorDeviceIdentifier(),
-        onQueueAcknowledged: (@MainActor () async -> Void)? = nil
+        onQueueAcknowledged: (@MainActor () async -> Void)? = nil,
+        onHostVisibleAuthenticationFailure: (@MainActor () -> Void)? = nil,
+        onAuthenticationRecovered: (@MainActor () -> Void)? = nil
     ) {
         self.configuration = configuration
         self.queueProvider = queueProvider
@@ -60,6 +64,8 @@ final class UploadCoordinator {
         self.diagnosticsReporter = diagnosticsReporter
         self.deviceIdentifier = deviceIdentifier
         self.onQueueAcknowledged = onQueueAcknowledged
+        self.onHostVisibleAuthenticationFailure = onHostVisibleAuthenticationFailure
+        self.onAuthenticationRecovered = onAuthenticationRecovered
         currentBackoff = configuration.uploadRetryBackoff
     }
 
@@ -314,8 +320,10 @@ final class UploadCoordinator {
 
     /// Obtains authorization and uploads. On 401/403, invalidates the cached
     /// token, refreshes once, and retries the same batch immediately.
+    /// Host-visible auth notify is owned by `handleUploadError` (single path).
     private func performUpload(batch: [QueuedDetection]) async throws -> UploadResponse {
         let authorization = try await authProvider.validAuthorization()
+        onAuthenticationRecovered?()
         do {
             return try await transport.upload(detections: batch, authorization: authorization)
         } catch {
@@ -324,8 +332,28 @@ final class UploadCoordinator {
             }
             authProvider.invalidateCachedToken()
             let refreshed = try await authProvider.validAuthorization()
+            onAuthenticationRecovered?()
             return try await transport.upload(detections: batch, authorization: refreshed)
         }
+    }
+
+    private func notifyHostVisibleAuthenticationFailureIfNeeded(_ error: Error) {
+        guard let authError = error as? TokenBrokerAuthError,
+              authError.isHostVisibleAuthenticationFailure else {
+            return
+        }
+        onHostVisibleAuthenticationFailure?()
+    }
+
+    /// Coarse, non-sensitive triage for host diagnostics (no tokens/bodies).
+    private func uploadDiagnosticError(for error: Error) -> Error {
+        if error is TokenBrokerAuthError {
+            return DiagnosticNotice("tokenBroker")
+        }
+        if error is HTTPIngestUploadError {
+            return DiagnosticNotice("ingest")
+        }
+        return error
     }
 
     /// Returns `true` when the flush loop should stop (retry scheduled / paused).
@@ -335,7 +363,8 @@ final class UploadCoordinator {
         batch: [QueuedDetection]
     ) async -> Bool {
         guard wantsRunning else { return true }
-        diagnosticsReporter.record(.uploadFailed, error: error)
+        diagnosticsReporter.record(.uploadFailed, error: uploadDiagnosticError(for: error))
+        notifyHostVisibleAuthenticationFailureIfNeeded(error)
         switch UploadFailurePolicy.policy(for: error) {
         case .deadLetterImmediately:
             await deadLetter(batch: batch, queue: queue)
