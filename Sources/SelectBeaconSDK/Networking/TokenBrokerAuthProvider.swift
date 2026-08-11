@@ -67,6 +67,8 @@ final class TokenBrokerAuthProvider: AuthProvider {
 
     private var cachedToken: CachedToken?
     private var refreshTask: Task<UploadAuthorization, Error>?
+    /// Bumped on invalidate so a late HTTP response cannot re-cache after cancel.
+    private var cacheGeneration = 0
 
     init(
         configuration: TokenBrokerConfiguration,
@@ -108,6 +110,7 @@ final class TokenBrokerAuthProvider: AuthProvider {
     }
 
     func invalidateCachedToken() {
+        cacheGeneration += 1
         cachedToken = nil
         refreshTask?.cancel()
         refreshTask = nil
@@ -118,6 +121,7 @@ final class TokenBrokerAuthProvider: AuthProvider {
     }
 
     private func requestToken() async throws -> UploadAuthorization {
+        let generation = cacheGeneration
         guard configuration.tokenEndpoint.isUsableHTTPSEndpoint else {
             throw TokenBrokerAuthError.invalidEndpoint
         }
@@ -142,8 +146,15 @@ final class TokenBrokerAuthProvider: AuthProvider {
         let response: URLResponse
         do {
             (data, response) = try await httpClient.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw TokenBrokerAuthError.networkRequestFailed
+        }
+
+        try Task.checkCancellation()
+        guard generation == cacheGeneration else {
+            throw CancellationError()
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -170,6 +181,11 @@ final class TokenBrokerAuthProvider: AuthProvider {
         let token = decodedResponse.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty, decodedResponse.expiresIn > 0 else {
             throw TokenBrokerAuthError.invalidResponse
+        }
+
+        try Task.checkCancellation()
+        guard generation == cacheGeneration else {
+            throw CancellationError()
         }
 
         let authorization = UploadAuthorization(
