@@ -4,7 +4,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, review-base]
   workflow_dispatch:
 
 jobs:
@@ -46,11 +46,22 @@ jobs:
           xcrun simctl list devices available | grep "${UDID}" || true
           echo "udid=${UDID}" >> "${GITHUB_OUTPUT}"
 
-      - name: Test SelectBeaconSDK-Package
+      - name: Resolve test scheme
+        id: scheme
+        run: |
+          set -euo pipefail
+          # Prefer the aggregate package scheme when present (multi-product).
+          if xcodebuild -list 2>/dev/null | grep -q 'SelectBeaconSDK-Package'; then
+            echo "name=SelectBeaconSDK-Package" >> "${GITHUB_OUTPUT}"
+          else
+            echo "name=SelectBeaconSDK" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Test package
         run: |
           set -euo pipefail
           xcodebuild test \
-            -scheme SelectBeaconSDK-Package \
+            -scheme "${{ steps.scheme.outputs.name }}" \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath TestResults.xcresult
 
