@@ -1,6 +1,7 @@
 import XCTest
 import CoreLocation
 @_spi(SelectApp) @testable import SelectBeaconSDK
+@testable import SelectBeaconSDKTestSupport
 
 @MainActor
 final class CoreLocationDetectionEngineTests: XCTestCase {

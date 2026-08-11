@@ -1,6 +1,7 @@
 import XCTest
 import CoreLocation
 @_spi(SelectApp) @testable import SelectBeaconSDK
+@testable import SelectBeaconSDKTestSupport
 
 final class FileDetectionQueueTests: XCTestCase {
     private func testURL(_ string: String) -> URL {
