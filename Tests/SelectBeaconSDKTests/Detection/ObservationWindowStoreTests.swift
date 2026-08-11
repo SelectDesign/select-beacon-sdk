@@ -12,8 +12,8 @@ final class ObservationWindowStoreTests: XCTestCase {
         )
     }
 
-    private func beacon(minor: Int = 42, rssi: Int) -> DetectedBeacon {
-        DetectedBeacon(uuid: fleetUUID, major: 1, minor: minor, rssi: rssi)
+    private func beacon(uuid: UUID? = nil, major: Int = 1, minor: Int = 42, rssi: Int) -> DetectedBeacon {
+        DetectedBeacon(uuid: uuid ?? fleetUUID, major: major, minor: minor, rssi: rssi)
     }
 
     func testFirstSightingOpensWindow() {
@@ -146,5 +146,24 @@ final class ObservationWindowStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.map(\.minor), [1, 2])
         let closed = store.finalizeAllOpenWindows()
         XCTAssertEqual(closed.map(\.minor), [1, 2])
+    }
+
+    func testSnapshotOrdersByUUIDWhenStartMajorMinorTie() {
+        var store = makeStore()
+        let higherUUID = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
+        let lowerUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        // Insert higher UUID first so dictionary order alone would not be ascending.
+        _ = store.process(
+            beacon: beacon(uuid: higherUUID, major: 1, minor: 1, rssi: -50),
+            location: nil,
+            now: t0
+        )
+        _ = store.process(
+            beacon: beacon(uuid: lowerUUID, major: 1, minor: 1, rssi: -55),
+            location: nil,
+            now: t0
+        )
+        XCTAssertEqual(store.snapshot.map(\.uuid), [lowerUUID, higherUUID])
+        XCTAssertEqual(store.finalizeAllOpenWindows().map(\.uuid), [lowerUUID, higherUUID])
     }
 }

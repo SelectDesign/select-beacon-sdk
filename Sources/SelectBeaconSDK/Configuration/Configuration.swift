@@ -197,7 +197,7 @@ struct TokenBrokerConfiguration: Equatable {
 
 extension SelectBeaconSDK {
     /// Selects the API environment used by the upload pipeline.
-    public enum Environment: Equatable {
+    public enum Environment: Equatable, Sendable {
         /// The default environment used by production app integrations.
         case production
 

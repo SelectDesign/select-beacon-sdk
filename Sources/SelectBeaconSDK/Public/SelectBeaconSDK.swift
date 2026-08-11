@@ -9,16 +9,29 @@ public final class SelectBeaconSDK {
 
     private init() {}
 
-    public static func configure(
+    /// Enables the SDK. Safe to call from any thread; work runs on the main actor.
+    ///
+    /// The type remains `@MainActor`, but this entry point is `nonisolated` so
+    /// hosts are not forced onto the main actor at the call site.
+    nonisolated public static func configure(
         appKey: String,
         appSecret: String,
         environment: Environment = .production
     ) {
-        guard let identity = AppIdentity(appKey: appKey, appSecret: appSecret) else {
-            shared.operationalStatus = .degraded(.invalidConfiguration)
-            return
+        let apply: @MainActor () -> Void = {
+            guard let identity = AppIdentity(appKey: appKey, appSecret: appSecret) else {
+                shared.operationalStatus = .degraded(.invalidConfiguration)
+                return
+            }
+            shared.configure(identity: identity, environment: environment)
         }
-        shared.configure(identity: identity, environment: environment)
+        if Thread.isMainThread {
+            MainActor.assumeIsolated(apply)
+        } else {
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated(apply)
+            }
+        }
     }
 
     func configure(identity: AppIdentity, environment: Environment) {

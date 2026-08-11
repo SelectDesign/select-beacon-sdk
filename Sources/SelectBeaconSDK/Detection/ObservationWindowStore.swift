@@ -186,6 +186,9 @@ struct ObservationWindowStore {
         if lhs.identity.major != rhs.identity.major {
             return lhs.identity.major < rhs.identity.major
         }
-        return lhs.identity.minor < rhs.identity.minor
+        if lhs.identity.minor != rhs.identity.minor {
+            return lhs.identity.minor < rhs.identity.minor
+        }
+        return lhs.identity.uuid.uuidString < rhs.identity.uuid.uuidString
     }
 }
