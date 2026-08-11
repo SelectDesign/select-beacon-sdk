@@ -54,13 +54,15 @@ approved Xcode installation before running iOS builds.
 
 ## 4. Run automated validation
 
-Pull requests targeting `main` run
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml): `swift package
-dump-package` plus `xcodebuild test -scheme SelectBeaconSDK-Package` on an
-available iPhone Simulator (UDID resolved at runtime). Confirm the first CI run
-on GitHub Actions finds a simulator; if the runner image has none, adjust the
-resolve step or install a platform runtime. Branch protection “required checks”
-are configured in GitHub settings, not in this repo.
+Pull requests targeting `main` or `review-base` run
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) on **macos-26** with
+**Xcode 26.4** (Swift 6.3, matching `swift-tools-version: 6.3`): `swift package
+dump-package` plus `xcodebuild test` on an available iPhone Simulator (UDID
+resolved at runtime). macos-15’s default toolchain is Swift 6.1 and cannot
+resolve this package. Confirm the first CI run on GitHub Actions finds a
+simulator; if the runner image has none, adjust the resolve step or install a
+platform runtime. Branch protection “required checks” are configured in GitHub
+settings, not in this repo.
 
 From the repository root (local parity):
 

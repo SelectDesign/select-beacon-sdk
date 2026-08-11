@@ -1,5 +1,8 @@
 # Runs the SelectBeaconSDK package test suite on iOS Simulator.
 # Matches docs/releasing.md automated validation (full Xcode; not `swift test`).
+#
+# Toolchain: Xcode 26.4.x → Apple Swift 6.3.x (matches `swift-tools-version: 6.3`).
+# macos-15’s default Xcode is Swift 6.1 and cannot resolve this package.
 name: CI
 
 on:
@@ -10,18 +13,38 @@ on:
 jobs:
   test:
     name: SelectBeaconSDK-Package
-    runs-on: macos-15
+    # Xcode 26.4+ (Swift 6.3) lives on macos-26; macos-15 tops out below tools 6.3.
+    runs-on: macos-26
     timeout-minutes: 45
+    env:
+      # Xcode 26.4 ships Swift 6.3.0; images may only expose 26.4.1 (Swift 6.3.1)
+      # via the Xcode_26.4.app symlink — both satisfy tools-version 6.3.
+      XCODE_APP: /Applications/Xcode_26.4.app
+      REQUIRED_SWIFT_MAJOR_MINOR: "6.3"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show Xcode
+      - name: Select Xcode (Swift 6.3 tools)
         run: |
           set -euo pipefail
+          if [ ! -d "$XCODE_APP" ]; then
+            echo "Missing $XCODE_APP on this runner."
+            echo "Installed Xcode apps:"
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP"
           xcode-select -p
           xcodebuild -version
+          SWIFT_VER="$(swift --version | head -n 1)"
+          echo "swift: ${SWIFT_VER}"
+          echo "${SWIFT_VER}" | grep -Eq "Swift version ${REQUIRED_SWIFT_MAJOR_MINOR}(\\.|$)" \
+            || {
+              echo "::error::Expected Swift ${REQUIRED_SWIFT_MAJOR_MINOR}.x for tools-version 6.3"
+              exit 1
+            }
 
       - name: Dump package manifest
         run: swift package dump-package > /dev/null
