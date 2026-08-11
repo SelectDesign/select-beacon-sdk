@@ -94,8 +94,10 @@ final class FileDetectionQueueTests: XCTestCase {
         do {
             try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
             XCTFail("Expected queue persistence to fail")
+        } catch is FailingFileStore.WriteError {
+            // Expected persistence failure from the failing file store.
         } catch {
-            XCTAssertTrue(true)
+            XCTFail("Unexpected error: \(error)")
         }
 
         let records = try await queue.nextBatch(limit: 10)
@@ -115,12 +117,67 @@ final class FileDetectionQueueTests: XCTestCase {
         do {
             try await queue.acknowledge(ids: [detection.id])
             XCTFail("Expected acknowledgement persistence to fail")
+        } catch is FailsAfterFirstWriteFileStore.WriteError {
+            // Expected persistence failure on acknowledgement write.
         } catch {
-            XCTAssertTrue(true)
+            XCTFail("Unexpected error: \(error)")
         }
 
         let retained = try await queue.nextBatch(limit: 10)
         XCTAssertEqual(retained, [detection])
+    }
+
+    func testAcknowledgeAndUploadAttemptNoOpsSkipPersist() async throws {
+        let fileStore = MemoryFileStore()
+        let fileURL = URL(fileURLWithPath: "/queue/noop.json")
+        let queue = FileDetectionQueue(
+            storageIdentifier: "noop",
+            fileStore: fileStore,
+            fileURL: fileURL
+        )
+        let detection = QueuedDetectionFixtures.make()
+        try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
+        let writesAfterEnqueue = fileStore.writeCount
+
+        try await queue.acknowledge(ids: [])
+        try await queue.acknowledge(ids: [UUID()])
+        try await queue.recordUploadAttempts(for: [])
+        try await queue.recordUploadAttempts(for: [UUID()])
+
+        XCTAssertEqual(fileStore.writeCount, writesAfterEnqueue)
+        let batch = try await queue.nextBatch(limit: 10)
+        XCTAssertEqual(batch, [detection])
+        XCTAssertEqual(batch.first?.uploadAttemptCount, 0)
+    }
+
+    func testLoadPrunesLargeOverflowInSingleRemoval() async throws {
+        let fileStore = MemoryFileStore()
+        let fileURL = URL(fileURLWithPath: "/queue/overflow.json")
+        let now = Date(timeIntervalSince1970: 10_000)
+        let seeded = (1...20).map { minor in
+            QueuedDetectionFixtures.make(
+                minor: minor,
+                queuedAt: Date(timeIntervalSince1970: TimeInterval(minor))
+            )
+        }
+        fileStore.seed(try JSONEncoder().encode(seeded), at: fileURL)
+
+        let queue = FileDetectionQueue(
+            storageIdentifier: "overflow",
+            fileStore: fileStore,
+            fileURL: fileURL,
+            maxQueueSize: 3,
+            maxRecordAge: 604_800
+        )
+        // Trigger load + prune via enqueue of a fourth-bound item.
+        let result = try await queue.enqueue(
+            QueuedDetectionFixtures.make(minor: 99, queuedAt: now),
+            now: now
+        )
+        XCTAssertGreaterThanOrEqual(result.evictedCount, 17)
+        let batch = try await queue.nextBatch(limit: 10)
+        XCTAssertEqual(batch.count, 3)
+        XCTAssertEqual(batch.map(\.minor), [19, 20, 99])
     }
 
     func testMalformedStoredQueueIsNotOverwritten() async throws {

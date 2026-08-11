@@ -334,9 +334,12 @@ actor FileDetectionQueue: DurableDetectionQueue {
 
     func acknowledge(ids: [UUID]) async throws {
         try loadIfNeeded()
+        guard !ids.isEmpty else { return }
         let previousRecords = records
         let acknowledged = Set(ids)
-        records.removeAll { acknowledged.contains($0.id) }
+        let remaining = records.filter { !acknowledged.contains($0.id) }
+        guard remaining.count != records.count else { return }
+        records = remaining
         do {
             try persist()
         } catch {
@@ -347,12 +350,17 @@ actor FileDetectionQueue: DurableDetectionQueue {
 
     func recordUploadAttempts(for ids: [UUID]) async throws {
         try loadIfNeeded()
+        guard !ids.isEmpty else { return }
         let previousRecords = records
         let idSet = Set(ids)
-        records = records.map { record in
+        var didUpdate = false
+        let updated = records.map { record -> QueuedDetection in
             guard idSet.contains(record.id) else { return record }
+            didUpdate = true
             return record.withUploadAttemptCount(record.uploadAttemptCount + 1)
         }
+        guard didUpdate else { return }
+        records = updated
         do {
             try persist()
         } catch {
@@ -452,9 +460,10 @@ actor FileDetectionQueue: DurableDetectionQueue {
         evicted += beforeAge - records.count
 
         let boundedMax = max(0, maxCount)
-        while records.count > boundedMax {
-            records.removeFirst()
-            evicted += 1
+        let overflow = records.count - boundedMax
+        if overflow > 0 {
+            records.removeFirst(overflow)
+            evicted += overflow
         }
         return evicted
     }

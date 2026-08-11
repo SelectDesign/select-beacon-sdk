@@ -4,6 +4,7 @@ import Foundation
 final class MemoryFileStore: FileStoring, @unchecked Sendable {
     private(set) var files: [URL: Data] = [:]
     private(set) var createdDirectories: [URL] = []
+    private(set) var writeCount = 0
     /// Tracks Data Protection applied by create/write/migrate. Absent until protected.
     private(set) var protectionByURL: [URL: FileProtectionType] = [:]
 
@@ -17,6 +18,7 @@ final class MemoryFileStore: FileStoring, @unchecked Sendable {
     }
 
     func writeAtomically(_ data: Data, to url: URL) throws {
+        writeCount += 1
         files[url] = data
         protectionByURL[url] = DefaultFileStore.durableFileProtection
     }
