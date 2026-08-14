@@ -3,6 +3,16 @@ import XCTest
 
 @MainActor
 final class SelectBeaconSDKConfigureThreadingTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        SelectBeaconSDK.shared.testingResetSharedEnablementState()
+    }
+
+    override func tearDown() {
+        SelectBeaconSDK.shared.testingResetSharedEnablementState()
+        super.tearDown()
+    }
+
     private func fulfillWhenStatus(
         _ predicate: @escaping (SDKOperationalStatus) -> Bool,
         expectation: XCTestExpectation,

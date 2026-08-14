@@ -248,9 +248,8 @@ final class SelectBeaconSDKConfigurationTests: XCTestCase {
         XCTAssertEqual(waitResult, .success, "configure must not main.sync while main waits on the caller")
         wait(for: [finished], timeout: 0.5)
 
-        // Drain (and discard) any staged enablement so later fixtures' start()
-        // paths are unaffected if they share process state.
-        SelectBeaconSDK.shared.start()
-        SelectBeaconSDK.shared.stop()
+        // Drop staged enablement without locking `shared` via start() — that would
+        // poison later configure-threading assertions on the process singleton.
+        SelectBeaconSDK.shared.testingResetSharedEnablementState()
     }
 }

@@ -888,6 +888,16 @@ public final class SelectBeaconSDK {
     var configuredEndpoint: APIEndpoint? {
         enablementConfiguration?.endpoint
     }
+
+    /// Unlocks `shared` after tests that call `start()` on it, and drops any
+    /// leftover staged `configure` values so later cases see a clean enablement gate.
+    func testingResetSharedEnablementState() {
+        hasStarted = false
+        enablementConfiguration = nil
+        queue = nil
+        _ = stagedEnablement.takeAll()
+        updateOperationalStatus(.unconfigured)
+    }
 }
 
 /// Lock-backed FIFO staging for `nonisolated` `configure` without `DispatchQueue.main.sync`.
