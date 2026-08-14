@@ -105,10 +105,13 @@ public final class SelectBeaconSDK {
     ///
     /// The type remains `@MainActor`, but this entry point is `nonisolated` so
     /// hosts can call it from any context. On the main thread, enablement applies
-    /// immediately. Off the main thread, enablement is staged under a lock and
-    /// applied on the main actor without a synchronous hop (callers that
-    /// configure off-main should reach `start()` on the main actor, which drains
-    /// the stage before ranging).
+    /// before `configure` returns. Off the main thread, credentials are staged
+    /// under a lock and applied on the main actor shortly after return — never
+    /// via `DispatchQueue.main.sync` (that deadlocks if main is waiting on the
+    /// caller). Hosts that need `.ready` before the next statement should call
+    /// `configure` on the main actor, observe `operationalStatus`, or reach
+    /// `start()` on the main actor (which drains any remaining stage before
+    /// ranging).
     nonisolated public static func configure(
         appKey: String,
         appSecret: String,
@@ -256,17 +259,20 @@ public final class SelectBeaconSDK {
     }
 
     private func applyStagedEnablementIfNeeded() {
-        guard let staged = stagedEnablement.take() else { return }
+        let staged = stagedEnablement.takeAll()
+        guard !staged.isEmpty else { return }
         guard !hasStarted else {
             updateOperationalStatus(.degraded(.configurationLocked))
             return
         }
-        switch staged {
-        case .invalid:
-            invalidateConfiguration()
-            updateOperationalStatus(.degraded(.invalidConfiguration))
-        case .valid(let identity, let environment):
-            configure(identity: identity, environment: environment)
+        for item in staged {
+            switch item {
+            case .invalid:
+                invalidateConfiguration()
+                updateOperationalStatus(.degraded(.invalidConfiguration))
+            case .valid(let identity, let environment):
+                configure(identity: identity, environment: environment)
+            }
         }
     }
 
@@ -884,7 +890,7 @@ public final class SelectBeaconSDK {
     }
 }
 
-/// Lock-backed staging for `nonisolated` `configure` without `DispatchQueue.main.sync`.
+/// Lock-backed FIFO staging for `nonisolated` `configure` without `DispatchQueue.main.sync`.
 /// Kept outside `@MainActor` `SelectBeaconSDK` so off-main configure can store safely.
 private let stagedEnablement = StagedEnablementBox()
 
@@ -895,19 +901,19 @@ private final class StagedEnablementBox: @unchecked Sendable {
     }
 
     private let lock = NSLock()
-    private var value: Kind?
+    private var queue: [Kind] = []
 
     func store(_ kind: Kind) {
         lock.lock()
-        value = kind
+        queue.append(kind)
         lock.unlock()
     }
 
-    func take() -> Kind? {
+    func takeAll() -> [Kind] {
         lock.lock()
         defer { lock.unlock() }
-        let current = value
-        value = nil
-        return current
+        let items = queue
+        queue = []
+        return items
     }
 }
