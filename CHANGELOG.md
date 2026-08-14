@@ -28,8 +28,5 @@ First package drop for host apps and the Select-owned app.
 
 - Host and Select app keys/secrets still need provisioning against the token
   broker for each install.
-- Optional Tier B background `URLSession` is not implemented; opportunistic
-  wake flushes only.
-- Remaining on-device checks: When-In-Use background pause/resume, Always +
-  location background wakes, relaunch pending visibility, stop-finalize Start
-  gating on device (see `TODO.md`).
+- Background `URLSession` (Tier B) is intentionally out of scope: confirmed
+  location-wake piggybacking; the SDK uses bounded wake flushes only.

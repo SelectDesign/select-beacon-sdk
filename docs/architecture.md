@@ -358,7 +358,9 @@ connectivity-gated):
    a backlog exists and the path is satisfied, flushes immediately.
 
 Quiet debounce remains foreground-only. True system background `URLSession`
-transfer (Tier B) is not implemented yet.
+transfer (Tier B) is a non-goal for the drop: the host already networks on
+location wakes, and the SDK’s bounded single-batch wake flush is the intended
+piggyback path (see `decisions.md`).
 
 Offline triggers do not attempt a send and do not start retry backoff.
 Failed sends classify as follows:

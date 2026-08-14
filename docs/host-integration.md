@@ -18,7 +18,13 @@ For Select-owned UI (beacons, queue, stop-finalize), see
   requests permission).
 - For background / screen-off wakes: **Always** authorization **and** location
   background mode (`UIBackgroundModes` / Xcode capability). Always alone is
-  not enough.
+  not enough. (host already enables both; other hosts must match.)
+- The SDK uses its own Core Location managers for beacon region monitoring and
+  ranging. Hosts do not need to forward location callbacks for detection;
+  leave `start()` intent on so the SDK can run in the OS wake window.
+- Background uploads are intended to run in those wake windows (bounded
+  single-batch flush). Avoid integrating patterns that keep the radio busy in
+  the background beyond that — field users notice battery spikes.
 
 ## Lifecycle
 

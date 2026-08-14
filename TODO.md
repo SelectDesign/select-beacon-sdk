@@ -2,13 +2,6 @@
 
 Open items only. Completed work lives in git history / `CHANGELOG.md`.
 
-## Production gates
-
-- [ ] Provision VIP keys/secrets against the token broker
-      (`POST {base}/auth/v1`).
-- [ ] VIP confirmation for background `URLSession` (Tier B) if system-completed
-      uploads while suspended are required beyond opportunistic wake flushes.
-
 ## Package / VIP handoff
 
 - [ ] Cut an annotated semver tag (`v0.x` pre-1.0, or `v1.0.0` when gates allow).
@@ -24,3 +17,6 @@ Open items only. Completed work lives in git history / `CHANGELOG.md`.
 - Resolving beacon serials in the SDK (backend only)
 - Third-party dependencies inside `SelectBeaconSDK`
 - Changing observation-window location aggregation rules unless product asks
+- Background `URLSession` (Tier B): confirmed uploads can piggyback on
+  location/region wakes; keep wake-bounded flush as the design (avoid
+  noticeable battery/data spikes)
