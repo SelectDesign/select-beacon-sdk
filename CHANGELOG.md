@@ -26,7 +26,7 @@ First package drop for host apps and the Select-owned app.
 
 ### Known limitations
 
-- Partner and Select app keys/secrets still need provisioning against the token
+- Host and Select app keys/secrets still need provisioning against the token
   broker for each install.
 - Optional Tier B background `URLSession` is not implemented; opportunistic
   wake flushes only.
