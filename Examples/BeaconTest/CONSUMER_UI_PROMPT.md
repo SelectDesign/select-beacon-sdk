@@ -33,10 +33,9 @@ Poison / max-attempt failures must leave Queued and appear under Dead letter.
 5. Optional for local demos only:  
    `SelectBeaconSDK.shared.selectInstallDebugAutoAckUploadSeams()`  
    (`@_spi(SelectApp)` on the SDK module) so flushes auto-acknowledge without a
-   real VIP API. Without auto-ack, staging uses live `/auth/v1` + ingest
-   Authorization. Production remains disabled while its host is
-   `REPLACE_ME_PRODUCTION`. Debug auto-ack drains Queued on success and does
-   **not** dead-letter.
+   real VIP API. Without auto-ack, staging and production use live `/auth/v1` +
+   ingest Authorization when a usable HTTPS host is configured. Debug auto-ack
+   drains Queued on success and does **not** dead-letter.
 
 ## Bindings
 

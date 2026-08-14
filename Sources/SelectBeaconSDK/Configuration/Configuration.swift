@@ -140,15 +140,14 @@ struct APIEndpoint: Equatable {
         url(path: "/sdk/v1/detections")
     }
 
-    /// True when `baseURL` is a usable HTTPS absolute URL (not the production placeholder).
+    /// True when `baseURL` is a usable absolute HTTPS URL.
     var isUsableHTTPBase: Bool {
         authURL != nil && ingestURL != nil
     }
 
     private func url(path: String) -> URL? {
         var trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedBase.isEmpty,
-              trimmedBase != APIEndpointDefaults.production else {
+        guard !trimmedBase.isEmpty else {
             return nil
         }
         while trimmedBase.hasSuffix("/") {
@@ -220,7 +219,7 @@ extension SelectBeaconSDK {
 }
 
 enum APIEndpointDefaults {
-    static let production = "REPLACE_ME_PRODUCTION"
+    static let production = "https://ingestor.beacons.selectbrandhub.com"
 }
 
 struct SDKEnablementConfiguration: Equatable {

@@ -23,11 +23,30 @@ final class APIEndpointURLTests: XCTestCase {
         )
     }
 
-    func testProductionPlaceholderIsNotUsable() {
+    func testProductionEndpointDerivesAuthAndIngestURLs() {
         let endpoint = APIEndpoint(baseURL: APIEndpointDefaults.production)
-        XCTAssertNil(endpoint.authURL)
-        XCTAssertNil(endpoint.ingestURL)
-        XCTAssertFalse(endpoint.isUsableHTTPBase)
+        XCTAssertEqual(
+            endpoint.authURL?.absoluteString,
+            "https://ingestor.beacons.selectbrandhub.com/auth/v1"
+        )
+        XCTAssertEqual(
+            endpoint.ingestURL?.absoluteString,
+            "https://ingestor.beacons.selectbrandhub.com/sdk/v1/detections"
+        )
+        XCTAssertTrue(endpoint.isUsableHTTPBase)
+    }
+
+    func testProductionEnvironmentEnablesTokenBroker() {
+        let identity = AppIdentity(appKey: "select-app-key", appSecret: "test-secret")!
+        let configuration = SDKEnablementConfiguration(
+            identity: identity,
+            environment: .production
+        )!
+        let tokenConfig = configuration.tokenBrokerConfiguration()
+        XCTAssertEqual(
+            tokenConfig?.tokenEndpoint.absoluteString,
+            "https://ingestor.beacons.selectbrandhub.com/auth/v1"
+        )
     }
 
     func testEnablementTokenBrokerUsesAuthPath() {

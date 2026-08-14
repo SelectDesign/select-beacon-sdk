@@ -30,8 +30,9 @@
 - The host supplies an app key and app secret before detection can start.
   Configuration stores them in memory only; configure never starts ranging,
   reads disk, or uses the network.
-- Production is the default (`REPLACE_ME_PRODUCTION` until its host is
-  confirmed). Staging requires a caller-supplied **HTTPS** URL (cleartext
+- Production is the default
+  (`https://ingestor.beacons.selectbrandhub.com`). Staging requires a
+  caller-supplied **HTTPS** URL (cleartext
   `http` is rejected). Environment cannot change after `start()`.
 
 ## Permission, lifecycle, and concurrency
@@ -107,8 +108,9 @@
 - Live usable hosts always authenticate: `TokenBrokerAuthProvider` posts
   `app_key` / `app_secret` to `/auth/v1`, caches `access_token` +
   `token_type` + expiry in memory, and ingest attaches `Authorization`.
-  There is no auth-pause kill-switch. Unusable production placeholder keeps
-  deferred upload seams (no network).
+  There is no auth-pause kill-switch. Production and usable staging HTTPS
+  hosts use the live path; unusable bases keep deferred upload seams (no
+  network).
 - Host-visible token-broker failures (401/403, invalid token body, unusable
   auth endpoint) surface as `.degraded(.authenticationFailed)` on
   `operationalStatus` — not diagnostics-only. Upload keeps Queued + backoff
@@ -143,5 +145,6 @@
 - The SDK obtains short-lived tokens using `appKey` and `appSecret` only. It
   never holds or transmits an Auth0 client secret. The app secret is never
   logged or written to the durable queue.
-- The production host remains `REPLACE_ME_PRODUCTION` until replaced; explicit
-  usable HTTPS staging URLs use the live auth and HTTP implementations.
+- The production host is `https://ingestor.beacons.selectbrandhub.com`;
+  explicit usable HTTPS staging URLs use the same live auth and HTTP
+  implementations.

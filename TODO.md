@@ -7,14 +7,15 @@ limitation.
 
 ## Production gates (blocks production upload)
 
-- [ ] Confirm and set the real production ingest host; replace
-      `REPLACE_ME_PRODUCTION` in `APIEndpointDefaults` / configuration.
+- [x] Confirm and set the real production ingest host
+      (`https://ingestor.beacons.selectbrandhub.com` in
+      `APIEndpointDefaults`).
 - [ ] Provision VIP (BizStride) and Select app keys/secrets against the token
       broker (`POST {base}/auth/v1`).
 - [x] End-to-end staging upload: configure `.staging(baseURL:)` with
       `appKey`/`appSecret`, detect a real beacon, confirm flat JSON body lands
       in beacon-ingestor with Authorization, HTTP 200 clears the durable queue.
-- [ ] End-to-end production upload after the host URL is set (same path,
+- [x] End-to-end production upload after the host URL is set (same path,
       production key + secret + host).
 - [x] Confirm with backend that wire attributes match ingest
       (`uuid`, `major`, `minor`, `best_rssi_dbm`, `observations`, `lat`/`lng`,
@@ -69,8 +70,8 @@ limitation.
       observations / lat-lng (label location timestamp **Cached location time**).
 - [ ] Smoke-build BizStride (or a VIP sample target) against the tagged package
       on a real device.
-- [x] Record known limitations in the release notes (e.g. production host still
-      placeholder until replaced).
+- [x] Record known limitations in the release notes (production host is live;
+      remaining gates: keys, E2E production upload, optional Tier B).
 
 ## Hardening / polish (not required for first VIP package)
 
@@ -140,5 +141,6 @@ upload pass, with release notes stating:
 
 1. Detection, 60s windows, durable queue, and upload coordinator are implemented.
 2. Staging uploads work with an explicit `environment: .staging(baseURL:)`.
-3. Default production configure still uses `REPLACE_ME_PRODUCTION` until the
-   confirmed host is substituted and a follow-up tag is cut.
+3. Default production configure uses
+   `https://ingestor.beacons.selectbrandhub.com` (live auth/ingest when a
+   usable HTTPS base is configured).
