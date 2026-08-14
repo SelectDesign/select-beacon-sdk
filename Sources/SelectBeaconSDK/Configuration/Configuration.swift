@@ -112,7 +112,7 @@ struct SDKConfiguration {
     )
 }
 
-struct AppIdentity: Equatable {
+struct AppIdentity: Equatable, Sendable {
     let appKey: String
     let appSecret: String
 
