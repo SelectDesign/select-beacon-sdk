@@ -1,6 +1,6 @@
 # Select Beacon SDK context
 
-This package is the iOS beacon-detection SDK embedded by VIP's BizStride app to
+This package is the iOS beacon-detection SDK embedded by host apps to
 crowdsource locations of Select retail assets.
 
 ## Non-negotiable constraints

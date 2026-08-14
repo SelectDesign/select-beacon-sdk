@@ -57,6 +57,9 @@ pattern and trigger rationale — is in the
 
 ## Integration
 
+Checklist for standard hosts:
+[docs/host-integration.md](docs/host-integration.md).
+
 Add the package to the host app, then configure it during the host's startup flow:
 
 ```swift
@@ -115,6 +118,9 @@ bodies, or beacon identities from the optional `error` parameter.
 
 ## Select app integration
 
+Checklist for the Select-owned app:
+[docs/select-app-integration.md](docs/select-app-integration.md).
+
 The standard `SelectBeaconSDK` product intentionally does not expose beacon
 identities, RSSI, or pending report records. The Select-owned application can
 add the separate `SelectBeaconAppSupport` product:
@@ -150,8 +156,8 @@ let deadLetters = try await SelectBeaconAppSupport.shared.deadLetteredReports()
 ```
 
 `LocationFix` on open windows and pending/dead-letter reports is for Select /
-AppSupport UI (cached coarse location). VIP hosts should ignore it and stay on
-`operationalStatus` only.
+AppSupport UI (cached coarse location). Standard hosts should ignore it and stay
+on `operationalStatus` only.
 
 `currentBeacons` is presence; `currentOpenWindows` is the in-progress minute
 summary; `pendingReports()` is the durable queue. Pending items remain until

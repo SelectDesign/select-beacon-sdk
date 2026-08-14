@@ -15,7 +15,7 @@ The harness UI has four beacon sections plus session controls (see
 
 **Select harness only:** this example uses `@_spi(SelectApp)` for
 `selectInstallDebugAutoAckUploadSeams()` so queued rows clear without a live
-ingest host. VIP BizStride must **not** copy that call or import
+ingest host. Standard hosts must **not** copy that call or import
 `@_spi(SelectApp)` / `SelectBeaconAppSupport`.
 
 Run the following checks on both a physical iPhone and iPad:

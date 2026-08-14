@@ -5,14 +5,14 @@ implementation, its deliberate boundaries, and where future work belongs.
 
 ## Purpose
 
-`SelectBeaconSDK` is an iOS 17+ Swift Package embedded by VIP's BizStride app.
+`SelectBeaconSDK` is an iOS 17+ Swift Package embedded by host apps.
 It detects Select iBeacons, aggregates sightings into observation-window
 reports, persists those reports, and separates standard SDK lifecycle control
 from Select-app data views.
 
-It uses Core Location only. Do not add raw CoreBluetooth scanning: BizStride
-already uses Footmarks, and Core Location avoids Bluetooth-radio contention and
-an additional Bluetooth permission flow.
+It uses Core Location only. Do not add raw CoreBluetooth scanning: host apps
+may already use other Bluetooth stacks, and Core Location avoids Bluetooth-radio
+contention and an additional Bluetooth permission flow.
 
 ## Public API
 
@@ -573,7 +573,9 @@ physical iPhone/iPad validation checklist.
 | `Support/SDKDependencies.swift`                          | Internal live/test dependency composition                      |
 | `development-context.md`                                 | Authoritative product constraints                              |
 | `decisions.md`                                           | Short record of key decisions                                  |
-| `README.md`                                              | Host integration instructions                                  |
+| `README.md`                                              | Host overview and public API                                   |
+| `docs/host-integration.md`                               | Standard-host integration checklist                            |
+| `docs/select-app-integration.md`                         | Select AppSupport integration checklist                        |
 
 ## Maintenance rules
 
