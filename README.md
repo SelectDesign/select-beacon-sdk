@@ -323,4 +323,5 @@ tagging, and rollback guidance, follow [the release runbook](docs/releasing.md).
 
 ## License
 
-This package is released under the [MIT License](LICENSE).
+This package is proprietary software owned by Select. See [LICENSE](LICENSE).
+Use and integration require a separate written agreement with Select.

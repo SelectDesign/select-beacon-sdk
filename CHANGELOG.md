@@ -16,6 +16,8 @@ First tagged Swift package drop for host apps and the Select-owned app.
 #### Package
 
 - iOS 17+, Swift 6, no third-party dependencies.
+- Proprietary license (see `LICENSE`); use and integration are governed by
+  a separate written agreement with Select.
 - SPM products `SelectBeaconSDK` (standard hosts) and `SelectBeaconAppSupport`
   (Select-owned UI).
 - `PrivacyInfo.xcprivacy` declaring Device ID (IDFV) and Precise Location for
