@@ -36,7 +36,6 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
 
         private var outcomes: [Outcome]
         private let delayNanoseconds: UInt64
-        /// When true, delay ignores Task cancellation (simulates non-cooperative HTTP).
         private let ignoreCancellationDuringDelay: Bool
         private var requests: [URLRequest] = []
 
@@ -110,6 +109,10 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
         func requestCount() -> Int {
             requests.count
         }
+
+        func firstRequestBody() -> Data? {
+            requests.first?.httpBody
+        }
     }
 
     private let initialDate = Date(timeIntervalSince1970: 1_000_000)
@@ -148,8 +151,34 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
         let requestCount = await client.requestCount()
 
         XCTAssertEqual(first.accessToken, "cached-token")
+        XCTAssertEqual(first.headerValue, "Bearer cached-token")
         XCTAssertEqual(second.accessToken, "cached-token")
         XCTAssertEqual(requestCount, 1)
+    }
+
+    func testRequestsTokenWhenNoTokenIsCached() async throws {
+        let client = FakeHTTPDataLoader(outcomes: [
+            .token(value: "new-token", tokenType: "Bearer", expiresIn: 300, statusCode: 200),
+        ])
+        let provider = try makeProvider(
+            client: client,
+            clock: MutableClock(now: initialDate)
+        )
+
+        let authorization = try await provider.validAuthorization()
+        let requestCount = await client.requestCount()
+        let requestBody = await client.firstRequestBody()
+        let unwrappedRequestBody = try XCTUnwrap(requestBody)
+        let request = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: unwrappedRequestBody) as? [String: String]
+        )
+
+        XCTAssertEqual(authorization.accessToken, "new-token")
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(
+            request,
+            ["app_key": "select-app-key", "app_secret": "select-app-secret"]
+        )
     }
 
     func testRefreshesTokenWithinSafetyMargin() async throws {
@@ -194,6 +223,113 @@ final class TokenBrokerAuthProviderTests: XCTestCase {
         XCTAssertEqual(requestCount, 1)
     }
 
+    func testTokenEndpointFailureIsTyped() async throws {
+        let client = FakeHTTPDataLoader(outcomes: [.networkFailure])
+        let provider = try makeProvider(
+            client: client,
+            clock: MutableClock(now: initialDate)
+        )
+
+        do {
+            _ = try await provider.validAuthorization()
+            XCTFail("Expected token retrieval to fail")
+        } catch let error as TokenBrokerAuthError {
+            XCTAssertEqual(error, .networkRequestFailed)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testRateLimitedHonorsRetryAfterHeader() async throws {
+        let client = FakeHTTPDataLoader(outcomes: [
+            .httpStatus(statusCode: 429, headerFields: ["Retry-After": "45"]),
+        ])
+        let provider = try makeProvider(
+            client: client,
+            clock: MutableClock(now: initialDate)
+        )
+
+        do {
+            _ = try await provider.validAuthorization()
+            XCTFail("Expected rate-limited token retrieval to fail")
+        } catch let error as TokenBrokerAuthError {
+            XCTAssertEqual(error, .rateLimited(retryAfter: 45))
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testRateLimitedWithoutRetryAfterUsesNilDelay() async throws {
+        let client = FakeHTTPDataLoader(outcomes: [
+            .httpStatus(statusCode: 429, headerFields: nil),
+        ])
+        let provider = try makeProvider(
+            client: client,
+            clock: MutableClock(now: initialDate)
+        )
+
+        do {
+            _ = try await provider.validAuthorization()
+            XCTFail("Expected rate-limited token retrieval to fail")
+        } catch let error as TokenBrokerAuthError {
+            XCTAssertEqual(error, .rateLimited(retryAfter: nil))
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testUnauthorizedStatusIsTypedAndHostVisible() async throws {
+        let client = FakeHTTPDataLoader(outcomes: [
+            .httpStatus(statusCode: 401, headerFields: nil),
+        ])
+        let provider = try makeProvider(
+            client: client,
+            clock: MutableClock(now: initialDate)
+        )
+
+        do {
+            _ = try await provider.validAuthorization()
+            XCTFail("Expected unauthorized token retrieval to fail")
+        } catch let error as TokenBrokerAuthError {
+            XCTAssertEqual(error, .unauthorized(statusCode: 401))
+            XCTAssertTrue(error.isHostVisibleAuthenticationFailure)
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testNetworkFailureIsNotHostVisible() {
+        XCTAssertFalse(TokenBrokerAuthError.networkRequestFailed.isHostVisibleAuthenticationFailure)
+        XCTAssertTrue(TokenBrokerAuthError.invalidEndpoint.isHostVisibleAuthenticationFailure)
+        XCTAssertTrue(TokenBrokerAuthError.invalidResponse.isHostVisibleAuthenticationFailure)
+    }
+
+    func testTokenIsNeverWrittenToDetectionQueue() async throws {
+        let client = FakeHTTPDataLoader(outcomes: [
+            .token(value: "memory-only-token", tokenType: "Bearer", expiresIn: 300, statusCode: 200),
+        ])
+        let provider = try makeProvider(
+            client: client,
+            clock: MutableClock(now: initialDate)
+        )
+        let fileStore = MemoryFileStore()
+        let fileURL = URL(fileURLWithPath: "/queue/pending-detections.json")
+        let queue = FileDetectionQueue(
+            storageIdentifier: "test",
+            fileStore: fileStore,
+            fileURL: fileURL
+        )
+        let detection = QueuedDetectionFixtures.make(latestTimestamp: initialDate)
+
+        try await queue.enqueue(detection, now: Date(timeIntervalSince1970: 1_000_000))
+        let authorization = try await provider.validAuthorization()
+
+        let persistedQueue = try XCTUnwrap(fileStore.files[fileURL])
+        let persistedText = try XCTUnwrap(String(data: persistedQueue, encoding: .utf8))
+        XCTAssertEqual(authorization.accessToken, "memory-only-token")
+        XCTAssertFalse(persistedText.contains("memory-only-token"))
+        XCTAssertFalse(persistedText.contains("select-app-secret"))
+    }
     func testInvalidatePreventsLateResponseFromRepopulatingCache() async throws {
         let client = FakeHTTPDataLoader(
             outcomes: [

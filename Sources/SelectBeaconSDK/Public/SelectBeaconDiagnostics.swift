@@ -10,6 +10,10 @@ public enum SelectBeaconDiagnosticEvent: Equatable, Sendable {
     /// On-disk queue JSON could not be decoded.
     case durableQueueUnreadable
     /// An upload attempt failed (retryable or otherwise classified upstream).
+    ///
+    /// The associated `error` may carry a coarse, non-sensitive triage hint for
+    /// host monitoring (token-broker vs ingest). Never log tokens, secrets, or
+    /// HTTP bodies from this error.
     case uploadFailed
     /// IDFV / device id was unavailable when building an ingest batch.
     case deviceIdentifierUnavailable

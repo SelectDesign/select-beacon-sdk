@@ -38,7 +38,9 @@ enum UploadFailurePolicy: Equatable, Sendable {
                     consumesUploadAttempt: false
                 )
             case .invalidEndpoint, .networkRequestFailed, .invalidHTTPResponse,
-                 .unexpectedStatusCode, .invalidResponse:
+                 .unauthorized, .unexpectedStatusCode, .invalidResponse:
+                // Host-visible auth failures still retry (suspend→re-enable self-heals)
+                // without burning uploadAttemptCount.
                 return .retryable(backoff: .exponential, consumesUploadAttempt: false)
             }
         }

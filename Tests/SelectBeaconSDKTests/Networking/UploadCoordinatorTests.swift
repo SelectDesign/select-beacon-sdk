@@ -12,8 +12,12 @@ final class UploadCoordinatorTests: XCTestCase {
 
         func validAuthorization() async throws -> UploadAuthorization {
             tokenCallCount += 1
-            if errorOnCalls.contains(tokenCallCount) {
-                throw error ?? TokenBrokerAuthError.networkRequestFailed
+            // When `errorOnCalls` is set, only those call indices throw.
+            if !errorOnCalls.isEmpty {
+                if errorOnCalls.contains(tokenCallCount) {
+                    throw error ?? TokenBrokerAuthError.networkRequestFailed
+                }
+                return UploadAuthorization(accessToken: token)
             }
             if let error {
                 throw error
@@ -71,7 +75,9 @@ final class UploadCoordinatorTests: XCTestCase {
         diagnostics: FakeDiagnosticsReporter = FakeDiagnosticsReporter(),
         deviceIdentifier: FakeDeviceIdentifier = FakeDeviceIdentifier(),
         configuration: SDKConfiguration = .default,
-        onQueueAcknowledged: (@MainActor () async -> Void)? = nil
+        onQueueAcknowledged: (@MainActor () async -> Void)? = nil,
+        onHostVisibleAuthenticationFailure: (@MainActor () -> Void)? = nil,
+        onAuthenticationRecovered: (@MainActor () -> Void)? = nil
     ) -> (
         UploadCoordinator,
         FakeAuthProvider,
@@ -95,7 +101,9 @@ final class UploadCoordinatorTests: XCTestCase {
             clock: clock,
             diagnosticsReporter: diagnostics,
             deviceIdentifier: deviceIdentifier,
-            onQueueAcknowledged: onQueueAcknowledged
+            onQueueAcknowledged: onQueueAcknowledged,
+            onHostVisibleAuthenticationFailure: onHostVisibleAuthenticationFailure,
+            onAuthenticationRecovered: onAuthenticationRecovered
         )
         return (coordinator, auth, transport, path, quiet, maxAge, retry, clock, diagnostics)
     }
@@ -783,6 +791,112 @@ final class UploadCoordinatorTests: XCTestCase {
         XCTAssertEqual(retry.scheduledDelays.last, SDKConfiguration.default.uploadRetryBackoff)
     }
 
+    func testUnauthorizedAuthNotifiesHostAndRecoversOnLaterSuccess() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 20)])
+        let auth = FakeAuthProvider()
+        auth.error = TokenBrokerAuthError.unauthorized(statusCode: 401)
+        let transport = FakeTransport()
+        let retry = ManualDelayedActionScheduler()
+        let diagnostics = FakeDiagnosticsReporter()
+        var failureCount = 0
+        var recoverCount = 0
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            auth: auth,
+            transport: transport,
+            retry: retry,
+            diagnostics: diagnostics,
+            onHostVisibleAuthenticationFailure: { failureCount += 1 },
+            onAuthenticationRecovered: { recoverCount += 1 }
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+
+        XCTAssertEqual(failureCount, 1)
+        XCTAssertEqual(recoverCount, 0)
+        XCTAssertEqual(queue.records.count, 1)
+        XCTAssertEqual(diagnostics.events, [.uploadFailed])
+        XCTAssertEqual(diagnostics.errors.first as? DiagnosticNotice, DiagnosticNotice("tokenBroker"))
+
+        auth.error = nil
+        retry.fire()
+        await waitForFlush(queue: queue)
+
+        XCTAssertEqual(recoverCount, 1)
+        XCTAssertTrue(queue.records.isEmpty)
+        XCTAssertEqual(transport.uploads.count, 1)
+    }
+
+    func testNetworkAuthFailureDoesNotNotifyHostVisibleAuthentication() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 21)])
+        let auth = FakeAuthProvider()
+        auth.error = TokenBrokerAuthError.networkRequestFailed
+        let retry = ManualDelayedActionScheduler()
+        var failureCount = 0
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            auth: auth,
+            retry: retry,
+            onHostVisibleAuthenticationFailure: { failureCount += 1 }
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+
+        XCTAssertEqual(failureCount, 0)
+    }
+
+    func testIngestUnauthorizedThenSuccessfulRefreshDoesNotNotifyHost() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 22)])
+        let transport = FakeTransport()
+        transport.statusErrors = [.unauthorized(statusCode: 401)]
+        var failureCount = 0
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            transport: transport,
+            onHostVisibleAuthenticationFailure: { failureCount += 1 }
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForFlush(queue: queue)
+
+        XCTAssertEqual(failureCount, 0)
+        XCTAssertTrue(queue.records.isEmpty)
+    }
+
+    func testIngestUnauthorizedAndRefreshBrokerUnauthorizedNotifiesHost() async {
+        let queue = InMemoryQueue(records: [makeDetection(minor: 23)])
+        let transport = FakeTransport()
+        transport.statusErrors = [.unauthorized(statusCode: 401)]
+        let auth = FakeAuthProvider()
+        // First mint succeeds; refresh after ingest 401 fails host-visibly.
+        auth.error = TokenBrokerAuthError.unauthorized(statusCode: 403)
+        auth.errorOnCalls = [2]
+        let retry = ManualDelayedActionScheduler()
+        let diagnostics = FakeDiagnosticsReporter()
+        var failureCount = 0
+        let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
+            queue: queue,
+            auth: auth,
+            transport: transport,
+            retry: retry,
+            diagnostics: diagnostics,
+            onHostVisibleAuthenticationFailure: { failureCount += 1 }
+        )
+
+        coordinator.start()
+        coordinator.flushOpportunistically()
+        await waitForSchedules(1, scheduler: retry)
+
+        XCTAssertEqual(failureCount, 1)
+        XCTAssertEqual(queue.records.count, 1)
+        XCTAssertEqual(diagnostics.errors.last as? DiagnosticNotice, DiagnosticNotice("tokenBroker"))
+    }
+
     func testAuthRateLimitedHonorsRetryAfterWithoutAdvancingBackoff() async {
         let queue = InMemoryQueue(records: [makeDetection(minor: 13)])
         let auth = FakeAuthProvider()
@@ -839,7 +953,7 @@ final class UploadCoordinatorTests: XCTestCase {
         let configuration = SDKConfiguration.default.with(maxUploadAttempts: 2)
         let queue = InMemoryQueue(records: [makeDetection(minor: 30)])
         let auth = FakeAuthProvider()
-        auth.error = TokenBrokerAuthError.invalidResponse
+        auth.error = TokenBrokerAuthError.unauthorized(statusCode: 403)
         let retry = ManualDelayedActionScheduler()
         let (coordinator, _, _, _, _, _, _, _, _) = makeCoordinator(
             queue: queue,
