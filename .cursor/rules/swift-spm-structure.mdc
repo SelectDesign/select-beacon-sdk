@@ -1,0 +1,33 @@
+---
+description: Swift package layout and API-boundary conventions for SelectBeaconSDK sources
+globs: Sources/**/*.swift,Package.swift
+alwaysApply: false
+---
+
+# SPM structure
+
+## Target layout
+
+- `Sources/SelectBeaconSDK/Public/` — host-facing types and `SelectBeaconSDK`
+- `Detection/` — ranging, windows, presence, location, permissions, lifecycle
+- `Networking/` — upload coordinator, auth, payload encoder, device id
+- `Persistence/` — durable queue
+- `Configuration/`, `Support/` — config, clock, diagnostics, dependencies
+- `Sources/SelectBeaconAppSupport/` — Select-owned adapter only; imports SPI
+
+## Visibility
+
+- Prefer `internal` by default; `public` only for the standard product surface
+- Select-only APIs: `@_spi(SelectApp)` on the core module; apps use AppSupport
+- Do not `@testable`-require production hosts; tests may use `@testable` / SPI
+
+## Seams
+
+- Inject clocks, queues, engines, path observers, schedulers, device id via `SDKDependencies`
+- Pure logic (e.g. `ObservationWindowStore`) takes `now` as an argument
+- Keep Apple types (`CLLocation`, `UIDevice`) behind thin adapters
+
+## Package
+
+- Products: `SelectBeaconSDK`, `SelectBeaconAppSupport`
+- No new package dependencies without an explicit product decision

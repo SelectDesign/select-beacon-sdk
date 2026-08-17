@@ -1,0 +1,97 @@
+# Runs the SelectBeaconSDK package test suite on iOS Simulator.
+# Matches docs/releasing.md automated validation (full Xcode; not `swift test`).
+#
+# Toolchain: Xcode 26.4.x → Apple Swift 6.3.x (matches `swift-tools-version: 6.3`).
+# macos-15’s default Xcode is Swift 6.1 and cannot resolve this package.
+name: CI
+
+on:
+  pull_request:
+    branches: [main, review-base]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: SelectBeaconSDK-Package
+    # Xcode 26.4+ (Swift 6.3) lives on macos-26; macos-15 tops out below tools 6.3.
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      # Xcode 26.4 ships Swift 6.3.0; images may only expose 26.4.1 (Swift 6.3.1)
+      # via the Xcode_26.4.app symlink — both satisfy tools-version 6.3.
+      XCODE_APP: /Applications/Xcode_26.4.app
+      REQUIRED_SWIFT_MAJOR_MINOR: "6.3"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode (Swift 6.3 tools)
+        run: |
+          set -euo pipefail
+          if [ ! -d "$XCODE_APP" ]; then
+            echo "Missing $XCODE_APP on this runner."
+            echo "Installed Xcode apps:"
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP"
+          xcode-select -p
+          xcodebuild -version
+          SWIFT_VER="$(swift --version | head -n 1)"
+          echo "swift: ${SWIFT_VER}"
+          echo "${SWIFT_VER}" | grep -Eq "Swift version ${REQUIRED_SWIFT_MAJOR_MINOR}(\\.|$)" \
+            || {
+              echo "::error::Expected Swift ${REQUIRED_SWIFT_MAJOR_MINOR}.x for tools-version 6.3"
+              exit 1
+            }
+
+      - name: Dump package manifest
+        run: swift package dump-package > /dev/null
+
+      - name: Resolve iPhone Simulator UDID
+        id: sim
+        run: |
+          set -euo pipefail
+          # Prefer any available iPhone; avoid hardcoding name/OS (runner images churn).
+          UDID="$(
+            xcrun simctl list devices available \
+              | sed -n 's/.*iPhone[^(]*(\([A-Fa-f0-9-]\{36\}\)).*/\1/p' \
+              | head -n 1
+          )"
+          if [[ -z "${UDID}" ]]; then
+            echo "::error::No available iPhone simulator found on this runner."
+            echo "Available devices:"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Using simulator UDID=${UDID}"
+          xcrun simctl list devices available | grep "${UDID}" || true
+          echo "udid=${UDID}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve test scheme
+        id: scheme
+        run: |
+          set -euo pipefail
+          # Prefer the aggregate package scheme when present (multi-product).
+          if xcodebuild -list 2>/dev/null | grep -q 'SelectBeaconSDK-Package'; then
+            echo "name=SelectBeaconSDK-Package" >> "${GITHUB_OUTPUT}"
+          else
+            echo "name=SelectBeaconSDK" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Test package
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -scheme "${{ steps.scheme.outputs.name }}" \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath TestResults.xcresult
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: TestResults.xcresult
+          if-no-files-found: ignore
