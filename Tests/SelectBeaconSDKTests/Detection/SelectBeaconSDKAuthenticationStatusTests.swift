@@ -1,5 +1,6 @@
 import XCTest
 @_spi(SelectApp) @testable import SelectBeaconSDK
+@testable import SelectBeaconSDKTestSupport
 
 /// Facade coverage for `.degraded(.authenticationFailed)` signal + retry self-heal.
 @MainActor

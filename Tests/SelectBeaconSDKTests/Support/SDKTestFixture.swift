@@ -1,5 +1,6 @@
 import XCTest
 @_spi(SelectApp) @testable import SelectBeaconSDK
+@testable import SelectBeaconSDKTestSupport
 
 @MainActor
 enum SDKTestFixture {

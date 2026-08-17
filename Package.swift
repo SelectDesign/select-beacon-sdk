@@ -12,6 +12,10 @@ let package = Package(
             name: "SelectBeaconSDK",
             targets: ["SelectBeaconSDK"]
         ),
+        .library(
+            name: "SelectBeaconAppSupport",
+            targets: ["SelectBeaconAppSupport"]
+        ),
     ],
     targets: [
         .target(
@@ -20,9 +24,27 @@ let package = Package(
                 .copy("PrivacyInfo.xcprivacy")
             ]
         ),
+        .target(
+            name: "SelectBeaconAppSupport",
+            dependencies: ["SelectBeaconSDK"]
+        ),
+        // Shared doubles/fixtures for both package test targets (not a product).
+        .target(
+            name: "SelectBeaconSDKTestSupport",
+            dependencies: ["SelectBeaconSDK"],
+            path: "Tests/SelectBeaconSDKTestSupport"
+        ),
         .testTarget(
             name: "SelectBeaconSDKTests",
-            dependencies: ["SelectBeaconSDK"]
+            dependencies: ["SelectBeaconSDK", "SelectBeaconSDKTestSupport"]
+        ),
+        .testTarget(
+            name: "SelectBeaconAppSupportTests",
+            dependencies: [
+                "SelectBeaconAppSupport",
+                "SelectBeaconSDK",
+                "SelectBeaconSDKTestSupport",
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]
