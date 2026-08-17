@@ -10,7 +10,14 @@ For Select-owned UI (beacons, queue, stop-finalize), see
 - Do **not** depend on `SelectBeaconAppSupport`.
 - Do **not** import `@_spi(SelectApp)`.
 - SPM: `https://github.com/SelectDesign/select-beacon-sdk.git` — pin to an
-  exact published tag (not a floating branch).
+  exact published tag (not a floating branch). First release: **`v1.0.0`**.
+
+```swift
+.package(
+    url: "https://github.com/SelectDesign/select-beacon-sdk.git",
+    exact: "1.0.0"
+)
+```
 
 ## Host requirements
 

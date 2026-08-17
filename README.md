@@ -60,6 +60,18 @@ pattern and trigger rationale — is in the
 Checklist for standard hosts:
 [docs/host-integration.md](docs/host-integration.md).
 
+### Install
+
+SPM URL: `https://github.com/SelectDesign/select-beacon-sdk.git`. Pin a published
+version (do not track a floating branch). Current release: **1.0.0** (`v1.0.0`).
+
+```swift
+.package(url: "https://github.com/SelectDesign/select-beacon-sdk.git", from: "1.0.0")
+```
+
+Depend on product `SelectBeaconSDK`. The Select-owned app also depends on
+`SelectBeaconAppSupport`.
+
 Add the package to the host app, then configure it during the host's startup flow:
 
 ```swift
