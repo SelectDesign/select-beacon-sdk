@@ -21,7 +21,8 @@ ranging requires real iPhone or iPad hardware.
 
 Do not create a production release until all applicable gates are complete:
 
-- Replace `REPLACE_ME_PRODUCTION` with the confirmed production API endpoint.
+- Production API endpoint is set to the confirmed host
+  (`https://ingestor.beacons.selectbrandhub.com`).
 - Validate the Select token-broker endpoint and app-key / app-secret provisioning.
 - Confirm the backend's upload payload and acknowledgement contract
   (including dedupe on `idempotency_key` for at-least-once re-sends).
@@ -30,8 +31,8 @@ Do not create a production release until all applicable gates are complete:
 
 At present, the SDK detects beacons, aggregates observation windows, persists
 eligible reports locally, and uploads through live auth/HTTP implementations
-when a usable environment URL is configured. Staging supports this path today.
-Production remains disabled only while `REPLACE_ME_PRODUCTION` is present.
+when a usable environment URL is configured (production default and explicit
+HTTPS staging).
 
 ## 3. Prepare a supported build machine
 

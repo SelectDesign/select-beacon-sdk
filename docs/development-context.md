@@ -13,7 +13,8 @@ crowdsource locations of Select retail assets.
 - Require `SelectBeaconSDK.configure(appKey:appSecret:)` before `start()`.
   Configure stores credentials in memory only; it never starts ranging, reads
   disk, or uses the network.
-- Production API configuration defaults internally to `REPLACE_ME_PRODUCTION`. Staging
+- Production API configuration defaults internally to
+  `https://ingestor.beacons.selectbrandhub.com`. Staging
   uses an explicit caller-supplied endpoint so multiple staging environments are supported.
 - Target iOS 17+, keep `SelectBeaconSDK` main-actor isolated, and add no third-party dependencies.
 - Keep the standard public API limited to configure, shared start/stop, and

@@ -180,9 +180,10 @@ Production is the default and requires no additional consumer configuration:
 SelectBeaconSDK.configure(appKey: key, appSecret: secret)
 ```
 
-The production endpoint is internally stubbed as `REPLACE_ME_PRODUCTION` until the
-production host is confirmed. For staging, pass an explicit **HTTPS** endpoint
-so separate staging deployments can coexist (cleartext `http` is rejected):
+The production endpoint is
+`https://ingestor.beacons.selectbrandhub.com`. For staging, pass an explicit
+**HTTPS** endpoint so separate staging deployments can coexist (cleartext
+`http` is rejected):
 
 ```swift
 SelectBeaconSDK.configure(
@@ -192,10 +193,9 @@ SelectBeaconSDK.configure(
 )
 ```
 
-Staging uses the live token-broker and HTTP ingest implementations when a usable
-HTTPS base URL is configured. Auth is `POST {base}/auth/v1` with `app_key` /
-`app_secret`; ingest sends `Authorization: Bearer {access_token}`.
-Replace the production placeholder before enabling production upload.
+Staging and production use the live token-broker and HTTP ingest implementations
+when a usable HTTPS base URL is configured. Auth is `POST {base}/auth/v1` with
+`app_key` / `app_secret`; ingest sends `Authorization: Bearer {access_token}`.
 Configuration cannot change after `start()`; stop and use a fresh process/session
 before switching environments.
 

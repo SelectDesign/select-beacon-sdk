@@ -24,8 +24,8 @@ description: >-
 - [ ] If host-visible state changes, mirror on AppSupport (snapshot + change callback; seed on init).
 - [ ] Keep auth and ingest aligned with the confirmed endpoints and flat JSON
       detections contract (snake_case wire keys; `/auth/v1` with
-      `app_key`/`app_secret`; Authorization on ingest); production remains
-      disabled while its host is the placeholder. Never log secrets or tokens.
+      `app_key`/`app_secret`; Authorization on ingest). Never log secrets or
+      tokens.
 - [ ] Update docs when behavior or wire format changes (`architecture.md`, `decisions.md`, README / consumer prompt as needed).
 - [ ] Add or extend unit tests for the new behavior and failure paths.
 

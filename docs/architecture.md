@@ -82,8 +82,7 @@ flowchart LR
 
 - `AppIdentity` validates a non-empty app key and app secret.
 - `SelectBeaconSDK.Environment` selects production or staging.
-- Production uses the internal `REPLACE_ME_PRODUCTION` placeholder until a real
-  endpoint is supplied.
+- Production defaults to `https://ingestor.beacons.selectbrandhub.com`.
 - Staging requires a caller-supplied **HTTPS** URL (cleartext `http` is
   rejected), allowing multiple staging deployments.
 - `SDKEnablementConfiguration` combines the app identity and endpoint information.
@@ -448,8 +447,8 @@ the auth degrade. Optional diagnostics still receive `.uploadFailed` for
 monitoring.
 
 `HTTPIngestUploadTransport` performs the live ingest POST when the environment
-base URL is a usable HTTPS URL. Production remains deferred while
-`REPLACE_ME_PRODUCTION` is still the placeholder. Tests use fakes against the
+base URL is a usable HTTPS URL (production defaults to
+`https://ingestor.beacons.selectbrandhub.com`). Tests use fakes against the
 coordinator and HTTP seams.
 
 ## Privacy manifest
