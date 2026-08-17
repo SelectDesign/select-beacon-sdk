@@ -1,21 +1,68 @@
-MIT License
+SelectBeaconSDK — Proprietary Software License
 
-Copyright (c) 2026 Select Design
+Copyright (c) 2026 Select. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Ownership
+   SelectBeaconSDK, including its source code, object code, documentation,
+   and all associated materials (the "Software"), is proprietary software
+   owned by Select ("Licensor"). The Software is protected by copyright and
+   other intellectual property laws. Licensor retains all right, title, and
+   interest in and to the Software, including all intellectual property
+   rights therein. No ownership rights are transferred by this license.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. License Grant
+   Subject to the terms of this license and any separate written agreement
+   between Licensor and the party integrating the Software ("Licensee"),
+   Licensor grants Licensee a limited, non-exclusive, non-transferable,
+   non-sublicensable license to use and integrate the Software solely for
+   the purposes agreed between the parties. Any use of the Software is
+   governed by, and subject to, that separate written agreement; in the
+   event of a conflict, the separate written agreement controls.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+3. Restrictions
+   Except as expressly permitted by this license or a separate written
+   agreement with Licensor, Licensee shall not:
+   (a) copy, distribute, sublicense, sell, rent, lease, or otherwise
+   make the Software available to any third party;
+   (b) modify, adapt, translate, or create derivative works of the
+   Software;
+   (c) reverse engineer, decompile, or disassemble the Software, or
+   otherwise attempt to derive its source code, except to the extent
+   such restriction is prohibited by applicable law;
+   (d) remove, alter, or obscure any copyright, trademark, or other
+   proprietary notices contained in the Software; or
+   (e) use the Software for any purpose other than as expressly agreed
+   with Licensor.
+
+4. Confidentiality
+   The Software contains proprietary and confidential information of
+   Licensor. Licensee shall protect the Software from unauthorized use,
+   access, or disclosure with at least the same degree of care it uses to
+   protect its own confidential information of a similar nature.
+
+5. No Warranty
+   THE SOFTWARE IS PROVIDED "AS IS," WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT,
+   except to the extent set out in a separate written agreement between the
+   parties.
+
+6. Limitation of Liability
+   TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL
+   LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL,
+   OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS OR DATA, ARISING OUT OF OR
+   RELATED TO THE USE OF THE SOFTWARE, except to the extent set out in a
+   separate written agreement between the parties.
+
+7. Termination
+   This license, and any rights granted hereunder, terminate automatically
+   if Licensee breaches its terms, or as provided in the separate written
+   agreement between the parties. Upon termination, Licensee shall cease all
+   use of the Software.
+
+8. Governing Terms
+   This license supplements, and does not replace, any separate written
+   agreement between Licensor and Licensee governing the Software. Where
+   such an agreement exists, its terms govern in the event of any conflict.
+
+For licensing inquiries, contact: [systems@selectdesign.com]
