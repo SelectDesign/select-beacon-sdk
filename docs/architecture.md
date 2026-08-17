@@ -274,10 +274,15 @@ Unreadable queue data is never replaced by a newly observed detection. Ordinary
 enqueue / load paths return `DurableDetectionQueueError.unreadableStoredDetections`
 so the original bytes remain for diagnosis. Hosts can intentionally recover with
 AppSupport `clearPendingReports()` (SPI: `selectClearPendingReports()`), which
-overwrites the durable pending file with an empty queue after detection is stopped and
-stop-finalize has settled. `clearDeadLetteredReports()` (SPI:
+overwrites the durable pending file with an empty queue after detection is stopped,
+stop-finalize has settled, in-flight durable deliveries have finished, and any
+upload flush has stopped mutating the queue. `clearDeadLetteredReports()` (SPI:
 `selectClearDeadLetteredReports()`) clears the dead-letter file only under the
 same gates.
+
+Pending→dead-letter moves write the dead-letter file before updating pending.
+On load, pending records whose IDs already appear in dead letters are dropped
+so a crash between those writes cannot lose a detection.
 
 Queue files are isolated using a SHA-256 identifier derived from the app key
 and resolved endpoint. The app key is not written to the file name. This keeps
@@ -359,15 +364,19 @@ transfer (Tier B) is not implemented yet.
 Offline triggers do not attempt a send and do not start retry backoff.
 Failed sends classify as follows:
 
-- **5xx / network / token-fetch:** exponential backoff (`uploadRetryBackoff` 15s,
-  doubling to `uploadRetryBackoffMax` 300s). Each failure increments a persisted
-  per-record `uploadAttemptCount`. After `maxUploadAttempts` (8), the batch is
-  moved to a durable dead-letter store so the FIFO head can advance.
+- **5xx / network / token-fetch network errors:** exponential backoff
+  (`uploadRetryBackoff` 15s, doubling to `uploadRetryBackoffMax` 300s). Each
+  ingest/network failure increments a persisted per-record `uploadAttemptCount`.
+  After `maxUploadAttempts` (8), the batch is moved to a durable dead-letter
+  store so the FIFO head can advance.
   Host-visible broker failures (401/403, invalid token body, invalid endpoint)
-  also set `.degraded(.authenticationFailed)` while retries continue.
+  also set `.degraded(.authenticationFailed)` while retries continue — those
+  broker auth failures **do not** consume `uploadAttemptCount`, so a long
+  suspension cannot dead-letter Queued work before re-enable self-heals.
 - **429 (ingest or auth token broker):** retryable; honor `Retry-After` when
-  present, otherwise exponential backoff. Attempts count toward
-  `maxUploadAttempts`. Does not change `operationalStatus`.
+  present, otherwise exponential backoff. Ingest 429 counts toward
+  `maxUploadAttempts`; auth-broker 429 does not. Does not change
+  `operationalStatus`.
 - **Ingest 401/403:** invalidate the cached token, refresh once, and retry the
   same batch immediately. A second failure uses exponential backoff (no tight
   loop). If the refresh mint fails with a host-visible broker error, status
