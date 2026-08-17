@@ -10,6 +10,13 @@
   with the host).
 - Background beacon wakes require host location background capability
   (`UIBackgroundModes`); the SDK implements monitoring/ranging only.
+  Confirmed their host already enables background location updates, requests
+  and retains Always (subject to Apple’s periodic re-prompts), and performs
+  background networking when the OS wakes the app for location events — the SDK
+  should piggyback on those wakes rather than requiring a separate background
+  transfer mode. Keep wake work bounded (single-batch flush) so field battery
+  use stays unremarkable. The SDK owns its Core Location managers for beacon
+  regions; hosts need not forward location callbacks for detection to work.
 - Major identifies the program (Pernod = 1); Minor identifies the unit.
 - The backend resolves serials. The SDK reports UUID, Major, and Minor only.
 

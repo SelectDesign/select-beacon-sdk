@@ -1,6 +1,6 @@
 /// Select/debug harness for physical-device validation of SelectBeaconSDK.
 ///
-/// Uses `@_spi(SelectApp)` debug auto-ack — Select only; not for VIP copy-paste.
+/// Uses `@_spi(SelectApp)` debug auto-ack — Select only; not for host copy-paste.
 import SwiftUI
 @_spi(SelectApp) import SelectBeaconSDK
 import SelectBeaconAppSupport

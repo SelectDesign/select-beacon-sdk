@@ -32,7 +32,7 @@ enum TokenBrokerAuthError: Error, Equatable {
     case unexpectedStatusCode(Int)
     case invalidResponse
 
-    /// Failures VIP should surface on `operationalStatus` (signal + retry).
+    /// Failures should surface on `operationalStatus` (signal + retry).
     var isHostVisibleAuthenticationFailure: Bool {
         switch self {
         case .unauthorized, .invalidEndpoint, .invalidResponse:

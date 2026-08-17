@@ -134,33 +134,37 @@ The iOS Simulator cannot validate physical beacon detection.
 Verify the release documentation matches the compiled package:
 
 - Standard consumers use `SelectBeaconSDK` for configuration, start/stop, and
-  operational status.
+  operational status — see [`host-integration.md`](host-integration.md).
 - The Select internal app additionally uses `SelectBeaconAppSupport` for
-  active-beacon and pending-report snapshots.
+  active-beacon and pending-report snapshots — see
+  [`select-app-integration.md`](select-app-integration.md).
 - Application source must not import the `SelectApp` SPI directly.
 
-Review [`README.md`](../README.md), [`architecture.md`](architecture.md),
-[`development-context.md`](development-context.md), and
-[`decisions.md`](decisions.md) for outdated examples, placeholder endpoints,
-or claims that reports are uploaded when they are only queued.
+Review [`README.md`](../README.md), [`host-integration.md`](host-integration.md),
+[`select-app-integration.md`](select-app-integration.md),
+[`architecture.md`](architecture.md), [`development-context.md`](development-context.md),
+and [`decisions.md`](decisions.md) for outdated examples or claims that reports
+are uploaded when they are only queued.
 
 ## 7. Publish the package version
 
 After validation:
 
 1. Commit the release changes through the normal review process.
-2. Create an annotated, immutable Git tag:
+2. Update [`CHANGELOG.md`](../CHANGELOG.md) for the version (move items out of
+   Unreleased; set the release date).
+3. Create an annotated, immutable Git tag:
 
    ```sh
    git tag -a v<version> -m "Release v<version>"
    git push origin v<version>
    ```
 
-3. Update each consuming app's Swift Package dependency to the new tag.
-4. Build and smoke-test each consuming app with its production-like
+4. Update each consuming app's Swift Package dependency to the new tag.
+5. Build and smoke-test each consuming app with its production-like
    configuration.
-5. Record the version, test evidence, supported Xcode version, and known
-   limitations in the release notes.
+6. Record the version, test evidence, supported Xcode version, and known
+   limitations in the release notes / CHANGELOG.
 
 Do not move or overwrite an existing release tag. If a released version needs
 to be withdrawn, publish a new patch version or revert the consuming app to
@@ -173,5 +177,7 @@ the prior known-good tag.
 - [ ] Permissions and background behavior are verified.
 - [ ] Production endpoint and upload readiness are confirmed, or release notes
       clearly state that only explicit staging URLs can upload.
-- [ ] Standard and Select-app product integration paths are documented.
+- [ ] Standard and Select-app product integration paths are documented
+      (`docs/host-integration.md`, `docs/select-app-integration.md`).
+- [ ] `CHANGELOG.md` is updated for the version.
 - [ ] Version tag and release notes are prepared.

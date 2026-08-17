@@ -26,7 +26,7 @@ extension CLLocationManager: @MainActor LocationManaging {}
 /// permission-only manager and no CoreBluetooth.
 ///
 /// Real background wakes also require the host app's location background mode
-/// (`UIBackgroundModes` / capability). That is a VIP/BizStride configuration
+/// (`UIBackgroundModes` / capability). That is a host-app configuration
 /// item; this type only implements the Core Location mechanism.
 ///
 /// This class intentionally owns no reporting or persistence policy.
