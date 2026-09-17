@@ -1,0 +1,36 @@
+# Semgrep OSS SAST for open (non-draft) pull requests targeting main.
+name: SAST
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+concurrency:
+  group: sast-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep OSS
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Community Edition: no SEMGREP_APP_TOKEN. --error fails the job on findings.
+      - name: Run Semgrep
+        run: >
+          semgrep scan
+          --config auto
+          --config p/swift
+          --config p/secrets
+          --error
