@@ -1,5 +1,4 @@
-# CodeQL SAST for open (non-draft) pull requests targeting main.
-# Toolchain matches .github/workflows/ci.yml (macos-26 / Xcode 26.4 / Swift 6.3).
+# Semgrep OSS SAST for open (non-draft) pull requests targeting main.
 name: SAST
 
 on:
@@ -13,70 +12,25 @@ concurrency:
 
 permissions:
   contents: read
-  security-events: write
-  actions: read
 
 jobs:
-  codeql:
-    name: CodeQL (Swift)
+  semgrep:
+    name: Semgrep OSS
     if: github.event.pull_request.draft == false
-    runs-on: macos-26
-    timeout-minutes: 60
-    env:
-      XCODE_APP: /Applications/Xcode_26.4.app
-      REQUIRED_SWIFT_MAJOR_MINOR: "6.3"
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Select Xcode (Swift 6.3 tools)
-        run: |
-          set -euo pipefail
-          if [ ! -d "$XCODE_APP" ]; then
-            echo "Missing $XCODE_APP on this runner."
-            echo "Installed Xcode apps:"
-            ls -d /Applications/Xcode*.app 2>/dev/null || true
-            exit 1
-          fi
-          sudo xcode-select -s "$XCODE_APP"
-          xcode-select -p
-          xcodebuild -version
-          SWIFT_VER="$(swift --version | head -n 1)"
-          echo "swift: ${SWIFT_VER}"
-          echo "${SWIFT_VER}" | grep -Eq "Swift version ${REQUIRED_SWIFT_MAJOR_MINOR}(\\.|$)" \
-            || {
-              echo "::error::Expected Swift ${REQUIRED_SWIFT_MAJOR_MINOR}.x for tools-version 6.3"
-              exit 1
-            }
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: swift
-          build-mode: manual
-
-      - name: Resolve build scheme
-        id: scheme
-        run: |
-          set -euo pipefail
-          if xcodebuild -list 2>/dev/null | grep -q 'SelectBeaconSDK-Package'; then
-            echo "name=SelectBeaconSDK-Package" >> "${GITHUB_OUTPUT}"
-          else
-            echo "name=SelectBeaconSDK" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Build package for CodeQL
-        run: |
-          set -euo pipefail
-          xcodebuild build \
-            -scheme "${{ steps.scheme.outputs.name }}" \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="-"
-
-      - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4
-        with:
-          category: "/language:swift"
+      # Community Edition: no SEMGREP_APP_TOKEN. --error fails the job on findings.
+      - name: Run Semgrep
+        run: >
+          semgrep scan
+          --config auto
+          --config p/swift
+          --config p/secrets
+          --error
